@@ -200,6 +200,18 @@ describe("assembleSystemPrompt — Reasoning Format (conditional)", () => {
 			assert.doesNotMatch(out.text, /<think>/, `${id} should not get <think> guidance`);
 		}
 	});
+
+	it("does NOT emit <think> guidance when the resolved model handles reasoning", () => {
+		const out = assembleSystemPrompt({
+			runtime: MOCK_RUNTIME,
+			personaFiles: [],
+			toolDescriptions: [],
+			modelId: "gpt-5.3-codex-spark",
+			thinkingLevel: "high",
+			modelReasoning: true,
+		});
+		assert.doesNotMatch(out.text, /<think>/);
+	});
 });
 
 describe("assembleSystemPrompt — persona file canonical sort", () => {
@@ -330,6 +342,39 @@ describe("assembleSystemPrompt — capability-gated sections", () => {
 			capabilities: { subAgents: true, cronMode: true },
 		});
 		assert.doesNotMatch(cron.text, /# Sub-agents/);
+	});
+});
+
+describe("assembleSystemPrompt — Team Mode", () => {
+	it("advertises durable coordination only when the team tool is present", () => {
+		const enabled = assembleSystemPrompt({
+			runtime: MOCK_RUNTIME,
+			personaFiles: [],
+			toolDescriptions: [{ name: "team", summary: "coordinate" }],
+		});
+		assert.match(enabled.text, /## Team Mode/);
+		assert.match(enabled.text, /durable Team Mode/);
+
+		const disabled = assembleSystemPrompt({
+			runtime: MOCK_RUNTIME,
+			personaFiles: [],
+			toolDescriptions: [],
+		});
+		assert.doesNotMatch(disabled.text, /## Team Mode/);
+	});
+
+	it("gives durable Team workers their own truthful minimal-mode contract", () => {
+		const out = assembleSystemPrompt({
+			runtime: MOCK_RUNTIME,
+			personaFiles: [],
+			toolDescriptions: [{ name: "team_task", summary: "attempt control" }],
+			capabilities: { teamWorkerMode: true },
+		});
+		assert.match(out.text, /# Team Task Context/);
+		assert.match(out.text, /durable task result returned to the coordinator/);
+		assert.match(out.text, /durable backplane waits for the resolution/);
+		assert.doesNotMatch(out.text, /# Sub-agent Context/);
+		assert.doesNotMatch(out.text, /there is no async backplane/i);
 	});
 });
 

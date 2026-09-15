@@ -58,7 +58,7 @@ skills-lock.json
 
 # Local planning docs (operator-only, not for the public repo)
 docs/web-client-plan.md
-docs/aionui-feature-harvest.md
+docs/*-feature-harvest.md
 
 # apps/ (mobile, web, …) — kept OUT of the public repo until the project gains
 # traction (target: 5k GitHub stars). Then un-ignore this + commit apps/.

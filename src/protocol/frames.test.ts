@@ -46,7 +46,18 @@ test("REQUEST_METHODS is non-empty, unique, and includes the core methods a clie
 test("EVENT_NAMES is exactly the broadcast event set", () => {
 	assert.deepEqual(
 		[...EVENT_NAMES].sort(),
-		["approval-request", "error", "log", "pi", "state", "system-event"].sort(),
+		[
+			"approval-request",
+			"error",
+			"log",
+			"pi",
+			"state",
+			"system-event",
+			"team-approval-request",
+			"team-approval-resolved",
+			"team-event",
+			"team-progress",
+		].sort(),
 	);
 });
 

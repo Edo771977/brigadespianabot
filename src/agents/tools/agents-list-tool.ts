@@ -10,11 +10,13 @@
  *
  *   {
  *     requester: string,
+ *     presence: "not_tracked",
  *     agents: [{
  *       id: string,
  *       name?: string,
  *       configured: boolean,    // id is materialised in cfg.agents
  *       self?: boolean,         // true on the caller row (placed FIRST)
+ *       canTeam: true,          // eligible when made a Team room member
  *       canSpawn: boolean,      // id in subagents.allowAgents (or '*')
  *       canSend: boolean,       // A2A policy allows (caller → id)
  *     }, ...]
@@ -48,12 +50,14 @@ interface AgentsListEntry {
 	name?: string;
 	configured: boolean;
 	self?: boolean;
+	canTeam: true;
 	canSpawn: boolean;
 	canSend: boolean;
 }
 
 interface AgentsListResult {
 	requester: string;
+	presence: "not_tracked";
 	agents: AgentsListEntry[];
 }
 
@@ -69,7 +73,7 @@ export function makeAgentsListTool(
 		name: "agents_list",
 		label: "Agents",
 		description:
-			"List EVERY agent currently configured. canSpawn/canSend flags tell you what is actually reachable. CALL THIS for any who/which/how-many agents question — never enumerate from memory.",
+			"List EVERY configured agent and its policy reachability. canTeam means the agent may execute Team work when it is a room member; canSend/canSpawn are unrelated legacy messaging policies. This does not probe provider credentials, quotas, health, or online presence: never call these agents online. CALL THIS for any configured-agent question; use the active Team room context for who is in that room.",
 		parameters: AgentsListParams,
 		execute: async (_toolCallId: string): Promise<AgentToolResult<AgentsListResult>> => {
 			const cfg = loadConfig();
@@ -156,6 +160,7 @@ export function makeAgentsListTool(
 				id: requesterAgentId,
 				configured: requesterConfigured,
 				self: true,
+				canTeam: true,
 				// Self-send and self-spawn are always permitted (the A2A policy
 				// short-circuits `requester === target`; spawn-on-self is a
 				// no-op that the runtime allows so the model isn't gated on
@@ -175,6 +180,7 @@ export function makeAgentsListTool(
 				const row: AgentsListEntry = {
 					id,
 					configured: true,
+					canTeam: true,
 					canSpawn: canSpawnTarget(id),
 					canSend: a2aPolicy.isAllowed(requesterAgentId, id),
 				};
@@ -185,6 +191,7 @@ export function makeAgentsListTool(
 
 			return jsonResult({
 				requester: requesterAgentId,
+				presence: "not_tracked",
 				agents: [requesterRow, ...peers],
 			}) as AgentToolResult<AgentsListResult>;
 		},

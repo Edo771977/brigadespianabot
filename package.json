@@ -49,6 +49,7 @@
     "convex/**/*.ts",
     "convex/_generated/**",
     "convex/tsconfig.json",
+    "docs/team-mode.md",
     "README.md",
     "LICENSE"
   ],
@@ -255,6 +256,9 @@
     },
     "exceljs": {
       "uuid": "^11.1.1"
+    },
+    "pptxgenjs": {
+      "image-size": "^2.0.4"
     },
     "@earendil-works/pi-ai": "0.79.9",
     "@earendil-works/pi-agent-core": "0.79.9",

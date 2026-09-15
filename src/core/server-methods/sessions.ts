@@ -49,6 +49,7 @@ import fs from "node:fs";
 
 import { DEFAULT_AGENT_ID, resolveSessionTranscriptPath } from "../../config/paths.js";
 import { tryGetRuntimeContext } from "../../storage/runtime-context.js";
+import { parseTeamAttemptSessionKey } from "../../collaboration/session-key.js";
 
 /**
  * Wave O0.5: server-side access guard.
@@ -98,6 +99,11 @@ function enforceAccess(
 	action: SessionsHandlerAccessAction,
 	targetSessionKey: string,
 ): void {
+	if (parseTeamAttemptSessionKey(targetSessionKey)) {
+		throw new SessionsAccessForbiddenError(
+			"Team attempt sessions are private runtime state; inspect them through Team run status",
+		);
+	}
 	if (!check) return;
 	const verdict = check({ action, targetSessionKey });
 	if (verdict.allowed) return;
@@ -155,7 +161,7 @@ export async function handleSessionsList(
 	params: SessionsListParams = {},
 	deps: SessionsListHandlerDeps = {},
 ): Promise<SessionsListResult> {
-	const live = listLiveSessions();
+	const live = listLiveSessions().filter((entry) => !parseTeamAttemptSessionKey(entry.sessionKey));
 	const filtered = applyFilters(live, params);
 	const visible = deps.accessCheck
 		? filtered.filter((entry) => {
@@ -191,6 +197,7 @@ export async function handleSessionsList(
 			continue; // an unreadable store must never fail the list
 		}
 		for (const { sessionKey, entry } of entries) {
+			if (parseTeamAttemptSessionKey(sessionKey)) continue;
 			if (liveKeys.has(sessionKey)) {
 				// The live row wins on runtime state, but the NAME only exists in the
 				// persisted store — carry it across rather than skipping outright, so a

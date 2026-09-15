@@ -44,6 +44,18 @@ import type { HelloOk } from "./protocol/handshake.js";
 import type { ShutdownFrame, TickFrame } from "./protocol/messages.js";
 import type { MemoryGraphExport } from "./agents/memory/graph-export.js";
 import type { MemoryQueryResult } from "./agents/memory/query.js";
+import {
+	TEAM_EVENT_NAMES,
+	TEAM_REQUEST_METHODS,
+	type TeamEventName,
+	type TeamEventPayloadMap,
+	type TeamRequestMethod,
+	type TeamRequestParams,
+	type TeamResponseFor,
+	type TeamRoomListSummary,
+} from "./protocol/team.js";
+
+export * from "./protocol/team.js";
 
 /* ─────────────────────────── frame types ─────────────────────────── */
 
@@ -271,7 +283,8 @@ export type RequestMethod =
 	 * rendered chart formats (tui/channel/ascii/json). Used by the
 	 * connect TUI's `/org` slash command. Reply: OrgSnapshotResult.
 	 */
-	| "org.snapshot";
+	| "org.snapshot"
+	| TeamRequestMethod;
 
 /* ─────────────────────────── event names ─────────────────────────── */
 
@@ -308,7 +321,8 @@ export type EventName =
 	 * `bash`). The TUI renders an inline approval prompt and resolves via
 	 * the `approval-resolve` request.
 	 */
-	| "approval-request";
+	| "approval-request"
+	| TeamEventName;
 
 /* ─────────────────────── runtime discovery arrays ─────────────────────── */
 
@@ -358,6 +372,7 @@ export const REQUEST_METHODS = [
 	"cron.runs",
 	"wake",
 	"org.snapshot",
+	...TEAM_REQUEST_METHODS,
 ] as const satisfies readonly RequestMethod[];
 
 /**
@@ -372,6 +387,7 @@ export const EVENT_NAMES = [
 	"log",
 	"system-event",
 	"approval-request",
+	...TEAM_EVENT_NAMES,
 ] as const satisfies readonly EventName[];
 
 /* ─────────────────────── pi inner-event contract ─────────────────────── */
@@ -733,7 +749,7 @@ export interface SessionRewindResult {
 }
 
 /** Params for each request method. `void` = no params required. */
-export interface RequestParams {
+export interface RequestParams extends TeamRequestParams {
 	prompt: {
 		text: string;
 		/** Target agent id; defaults to the gateway's boot default when omitted. */
@@ -979,12 +995,24 @@ export interface RequestParams {
 		 * Advertised as the `subscribe.scope` capability in `hello-ok`.
 		 */
 		scope?: "session" | "agent";
+		/**
+		 * Subscribe to one Team Mode room. Unlike legacy agent/session delivery,
+		 * Team Mode has no unaffiliated firehose: a room must be named explicitly.
+		 */
+		roomId?: string;
+		/**
+		 * Receive lossy token/tool progress for `roomId`. Durable `team-event`
+		 * delivery does not depend on this flag. Defaults to false.
+		 */
+		includeProgress?: boolean;
 	};
 	unsubscribe: {
 		/** Drop a prior agentId subscription. */
 		agentId?: string;
 		/** Drop a prior sessionId subscription. */
 		sessionId?: string;
+		/** Drop a prior Team Mode room subscription (including progress). */
+		roomId?: string;
 	};
 	"agents.list": void;
 	"sessions.list": {
@@ -1026,7 +1054,7 @@ export interface RequestParams {
 }
 
 /** Payload for each request method's response. `void` = no payload. */
-export interface ResponseFor {
+export interface ResponseFor extends TeamResponseFor {
 	prompt: void;
 	abort: void;
 	"sessions.rewind": SessionRewindResult;
@@ -1073,7 +1101,11 @@ export interface ResponseFor {
 	"memory-graph": MemoryGraphExport;
 	"memory-query": MemoryQueryResult;
 	shutdown: void;
-	subscribe: void;
+	/**
+	 * Room subscriptions return a post-install authoritative summary. Legacy
+	 * agent/session-only subscriptions retain their payload-less success reply.
+	 */
+	subscribe: TeamRoomListSummary | void;
 	unsubscribe: void;
 	"agents.list": AgentSummary[];
 	"sessions.list": SessionSummary[];
@@ -1093,7 +1125,7 @@ export interface ResponseFor {
 }
 
 /** Payload shape for each event. */
-export interface EventPayload {
+export interface EventPayload extends TeamEventPayloadMap {
 	pi: {
 		event: any; // Pi's AgentSessionEvent — kept opaque to avoid coupling
 		/** Sub-agent depth (Primitive #6). > 0 means this event came from a
@@ -1155,6 +1187,8 @@ export interface EventPayload {
 	"approval-request": {
 		/** Opaque server-side id; echo back in `approval-resolve`. */
 		id: string;
+		/** Server timestamp for stable chronological placement. */
+		createdAt?: number;
 		/** The shell command the agent wants to run. */
 		command: string;
 		/** Tool that triggered the prompt (today always `"bash"`). */
@@ -1303,6 +1337,9 @@ export interface SessionStateSnapshot {
 	totalTokensOut: number;
 	totalCostUsd: number;
 	isAgentRunning: boolean;
+	/** True only when this exact bound session has an in-flight turn. Older
+	 * gateways omit it; clients may fall back to the agent-wide signal. */
+	isSessionRunning?: boolean;
 	messageCount: number;
 	/**
 	 * A newer Brigade is published. Present only when one genuinely is: the check is

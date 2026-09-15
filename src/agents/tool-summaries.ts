@@ -37,6 +37,8 @@ export const BRIGADE_TOOL_SUMMARIES: Record<string, string> = {
   // catalog is just the menu.
   agents_list:
     "List EVERY configured Brigade agent with canSpawn/canSend reachability flags. Call this — don't enumerate agents from memory.",
+  team: "Coordinate durable multi-agent rooms, runs, task graphs, joins, budgets, retries, approvals, handoffs, and live status.",
+  team_task: "Operate only the current leased Team task: status, handoff, approval, or artifact registration.",
   manage_agent: "Owner-only: create, delete, or update an agent's identity. Use this for any agent-catalog mutation — never hand-edit brigade.json.",
   manage_skill: "Owner-only: create or delete a skill (agent-scoped or shared). Never write SKILL.md by hand; this tool handles the catalog atomically.",
   // Consolidated virtual-office surface (only present when cfg.org is set).

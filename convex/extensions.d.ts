@@ -5,12 +5,12 @@ export declare const list: import("convex/server").RegisteredQuery<"public", {},
     bundleBytes?: ArrayBuffer | undefined;
     manifest?: any;
     bundleSha?: string | undefined;
+    createdAt: number;
     enabled: boolean;
     createdBy: string;
     moduleId: string;
-    createdAt: number;
-    origin: "bundled" | "user";
     updatedAt: number;
+    origin: "bundled" | "user";
     sourceLabel: string;
 }[]>>;
 export declare const upsert: import("convex/server").RegisteredMutation<"public", {

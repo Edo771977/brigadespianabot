@@ -9,6 +9,7 @@ import {
 	shouldUseReasoningFormat,
 	SKILLS_GUIDANCE,
 	SUB_AGENTS_GUIDANCE,
+	TEAM_MODE_GUIDANCE,
 } from "./guidance.js";
 import type { RuntimeParams } from "./runtime-params.js";
 
@@ -76,6 +77,20 @@ describe("guidance constants — bodies still load-bearing", () => {
 		// tool" in v1; "crew" framing reads as the latter.
 		assert.doesNotMatch(SUB_AGENTS_GUIDANCE, /\bcrew\b/i);
 	});
+
+	it("TEAM_MODE_GUIDANCE distinguishes durable collaboration from direct messaging", () => {
+		assert.match(TEAM_MODE_GUIDANCE, /durable Team Mode/);
+		assert.match(TEAM_MODE_GUIDANCE, /not live provider health or online presence/);
+		assert.match(TEAM_MODE_GUIDANCE, /`team` is the only agent-coordination surface/);
+		assert.match(TEAM_MODE_GUIDANCE, /quick one-peer question may use `sessions_send`/);
+		assert.match(TEAM_MODE_GUIDANCE, /never fabricate fallback work/);
+		assert.match(TEAM_MODE_GUIDANCE, /independent review task/);
+		assert.match(TEAM_MODE_GUIDANCE, /policy:"independent-v1"/);
+		assert.match(TEAM_MODE_GUIDANCE, /canSend.*canSpawn.*do not restrict Team work/);
+		assert.match(TEAM_MODE_GUIDANCE, /do not assign yourself a worker task/);
+		assert.match(TEAM_MODE_GUIDANCE, /Staffing language alone is not a usable goal/);
+		assert.match(TEAM_MODE_GUIDANCE, /greeting or straightforward question is normal conversation/);
+	});
 });
 
 describe("shouldUseReasoningFormat", () => {
@@ -100,6 +115,10 @@ describe("shouldUseReasoningFormat", () => {
 		assert.equal(shouldUseReasoningFormat("gpt-4o", "high"), true);
 		assert.equal(shouldUseReasoningFormat("gemini-2.5-pro", "high"), true);
 		assert.equal(shouldUseReasoningFormat("mistral-large-2", "high"), true);
+	});
+
+	it("returns false when the resolved model advertises native reasoning", () => {
+		assert.equal(shouldUseReasoningFormat("gpt-5.3-codex-spark", "high", true), false);
 	});
 });
 

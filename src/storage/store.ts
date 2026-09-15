@@ -14,6 +14,7 @@
 // alongside the LocalXStore that wraps the existing file code.
 
 import type { BrigadeConfig } from "../config/types.js";
+import type { CollaborationStore } from "../collaboration/store.js";
 
 // =============================================================================
 // Cross-cutting types
@@ -71,7 +72,7 @@ export class NotImplementedYet extends Error {
 }
 
 // =============================================================================
-// The interface — 16 typed sub-APIs, never fs-shaped
+// The interface — 17 typed sub-APIs, never fs-shaped
 // =============================================================================
 
 export interface BrigadeStore {
@@ -109,6 +110,8 @@ export interface BrigadeStore {
 	readonly instance: InstanceStore;
 	/** 16. Content-addressed byte blobs (charts, media, bundles). */
 	readonly blobs: BlobStore;
+	/** 17. Durable Team Mode rooms, runs, tasks, attempts, events, and outbox. */
+	readonly collaboration: CollaborationStore;
 
 	// Adapter lifecycle ---------------------------------------------------------
 	init(): Promise<void>;

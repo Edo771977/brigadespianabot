@@ -31,6 +31,8 @@ import {
 	filterToolsForSubagentDepth,
 } from "../subagent-policy.js";
 import { getActiveCronService } from "../../cron/active-service.js";
+import { getActiveTeamExecutionContext } from "../../collaboration/execution-context.js";
+import { parseTeamChatSessionKey } from "../../collaboration/session-key.js";
 import { makeAgentsListTool } from "./agents-list-tool.js";
 import { makeCronTool } from "./cron-tool.js";
 import { makeManageAgentTool } from "./manage-agent-tool.js";
@@ -70,6 +72,8 @@ import { makeSendMediaTool } from "./send-media-tool.js";
 import { makeSendMessageTool } from "./send-message-tool.js";
 import { makeSpawnAgentTool } from "./spawn-agent-tool.js";
 import { makeSpawnAgentsTool } from "./spawn-agents-tool.js";
+import { makeTeamTaskTool } from "./team-task-tool.js";
+import { makeTeamTool } from "./team-tool.js";
 import { createSessionsBrigadeTools } from "./sessions/index.js";
 import type { AnyBrigadeTool } from "./types.js";
 
@@ -164,6 +168,10 @@ export interface CreateBrigadeToolsOptions {
 		modelId?: string;
 		imageInput?: boolean;
 	};
+	/** Live Team-agent availability supplied by the gateway runtime. */
+	teamAgentIsRunnable?: (agentId: string) => boolean | Promise<boolean>;
+	/** Restrict the Team tool to inspection for synthetic coordinator returns. */
+	teamToolReadOnly?: boolean;
 	/**
 	 * Per-turn session metadata (Step 11's `SessionContext`). When supplied,
 	 * `createBrigadeTools` includes the four sessions tools
@@ -203,6 +211,29 @@ export interface CreateBrigadeToolsOptions {
  * construct a deterministic registry without touching the filesystem.
  */
 export function createBrigadeTools(opts: CreateBrigadeToolsOptions): AnyBrigadeTool[] {
+	// Resolve once for the whole assembly. AsyncLocalStorage propagates into
+	// promises created by a Team attempt, including a child session if one is
+	// launched outside the model-visible surface. Therefore context presence by
+	// itself is NOT authority: both the routed agent and exact session key must
+	// match the leased attempt before `team_task` is mounted.
+	const activeTeamContext = getActiveTeamExecutionContext();
+	const isTeamCoordinatorChat = opts.sessionContext?.key
+		? parseTeamChatSessionKey(opts.sessionContext.key) !== undefined
+		: false;
+	if (activeTeamContext) {
+		const callerSessionKey = opts.sessionContext?.key ?? opts.subagentContext?.parentSessionKey;
+		const isLeasedTeamAttempt =
+			opts.agentId === activeTeamContext.identifiers.agentId &&
+			callerSessionKey === activeTeamContext.identifiers.sessionKey;
+
+		// Fail closed for the entire inherited Team async tree. The exact worker
+		// receives only the filesystem search helper plus its lease-bound Team
+		// capability. A mismatched child receives neither owner/global tools nor
+		// the parent's `team_task`, preventing delegation/session/admin escape.
+		return isLeasedTeamAttempt
+			? [makeFindTool({ cwd: opts.cwd }), makeTeamTaskTool({ context: activeTeamContext })]
+			: [makeFindTool({ cwd: opts.cwd })];
+	}
 	// Primitive #4 (Memory): the active backend is a `MemoryCapability` — bundled
 	// default (file-based FactStore + FileMemoryStore) when no plugin is pinned,
 	// or a registered plugin (vector DB, KG, …) when `extensions.slots.memory`
@@ -256,6 +287,19 @@ export function createBrigadeTools(opts: CreateBrigadeToolsOptions): AnyBrigadeT
 		// Mirrors the reference codebase's posture: the model can SEE the agent
 		// catalog without any privilege check.
 		makeAgentsListTool(opts.agentId !== undefined ? { requesterAgentId: opts.agentId } : {}),
+		// team — owner-only durable Team Mode control plane. It is mounted for the
+		// legacy `main` primary and for any explicitly owner-routed custom primary.
+		// The tool resolves the active BrigadeStore lazily when called, preserving
+		// filesystem/Convex parity. The active-Team early return above prevents it
+		// from reaching a worker or an async child that inherited the attempt context.
+		...(opts.agentId === "main" || opts.senderIsOwner === true
+			? [makeTeamTool({
+				agentId: opts.agentId,
+				...(opts.sessionContext?.key ? { sessionKey: opts.sessionContext.key } : {}),
+				...(opts.teamAgentIsRunnable ? { validateAgentId: opts.teamAgentIsRunnable } : {}),
+				...(opts.teamToolReadOnly === true ? { readOnly: true } : {}),
+			})]
+			: []),
 		// manage_agent — owner-only LLM-driven agent CRUD. Same posture as the
 		// reference codebase's `gateway` tool (also owner-only) but with a
 		// dedicated action surface (add/delete/set-identity) that wraps the
@@ -424,7 +468,7 @@ export function createBrigadeTools(opts: CreateBrigadeToolsOptions): AnyBrigadeT
 	// disappearing from the surface.
 	try {
 		const cfgForOrgGate = _loadConfigForOrgGate() as { org?: unknown };
-		if (cfgForOrgGate && cfgForOrgGate.org) {
+		if (cfgForOrgGate && cfgForOrgGate.org && !isTeamCoordinatorChat) {
 			tools.push(
 				makeOrgTool({
 					...(opts.agentId !== undefined
@@ -503,7 +547,7 @@ export function createBrigadeTools(opts: CreateBrigadeToolsOptions): AnyBrigadeT
 	// (cross-origin isolation + write-gate bypass). Owner turns (true) and trusted
 	// internal pathways (undefined) keep spawn. (A confined peer→sub-agent that
 	// inherits the peer's origin is a future enhancement; until then, deny.)
-	if (opts.subagentContext && opts.senderIsOwner !== false) {
+	if (opts.subagentContext && opts.senderIsOwner !== false && !isTeamCoordinatorChat) {
 		const spawnAgentTool = makeSpawnAgentTool({
 			parentSessionKey: opts.subagentContext.parentSessionKey,
 			parentAgentId: opts.agentId,
@@ -648,7 +692,7 @@ export function createBrigadeTools(opts: CreateBrigadeToolsOptions): AnyBrigadeT
 	// they don't need cross-session coordination; channel-routed agent
 	// turns + sub-agent runs always pass a context so the four sessions
 	// tools surface there.
-	if (opts.sessionContext) {
+	if (opts.sessionContext && !isTeamCoordinatorChat) {
 		const sessionsTools = createSessionsBrigadeTools({
 			sessionContext: opts.sessionContext,
 			...(opts.channelContext !== undefined

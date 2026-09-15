@@ -18,10 +18,10 @@ export declare const getEntry: import("convex/server").RegisteredQuery<"public",
         spawnedAt: string;
     } | undefined;
     extra?: ArrayBuffer | undefined;
+    createdAt: number;
     agentId: string;
     sessionKey: string;
     sessionId: string;
-    createdAt: number;
     lastUsedAt: number;
 } | null>>;
 export declare const listEntries: import("convex/server").RegisteredQuery<"public", {
@@ -44,16 +44,16 @@ export declare const listEntries: import("convex/server").RegisteredQuery<"publi
         spawnedAt: string;
     } | undefined;
     extra?: ArrayBuffer | undefined;
+    createdAt: number;
     agentId: string;
     sessionKey: string;
     sessionId: string;
-    createdAt: number;
     lastUsedAt: number;
 }[]>>;
 export declare const upsertEntry: import("convex/server").RegisteredMutation<"public", {
+    createdAt?: number | undefined;
     modelId?: string | undefined;
     provider?: string | undefined;
-    createdAt?: number | undefined;
     lastUsedAt?: number | undefined;
     authProfile?: string | undefined;
     thinkingLevel?: string | undefined;
@@ -87,10 +87,10 @@ export declare const upsertEntry: import("convex/server").RegisteredMutation<"pu
         spawnedAt: string;
     } | undefined;
     extra?: ArrayBuffer | undefined;
+    createdAt: number;
     agentId: string;
     sessionKey: string;
     sessionId: string;
-    createdAt: number;
     lastUsedAt: number;
 } | null>>;
 export declare const deleteEntry: import("convex/server").RegisteredMutation<"public", {

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { handleSessionsList } from "./sessions.js";
 import { pinSessionModel, upsertSessionEntry } from "../../sessions/session-store.js";
+import { buildTeamAttemptSessionKey } from "../../collaboration/session-key.js";
 
 let tmpRoot: string;
 let prevState: string | undefined;
@@ -52,6 +53,7 @@ test("machinery threads stay hidden — sub-agents and isolated cron runs are no
 		subagent: { parentSessionKey: "agent:main:main", depth: 1 },
 	} as never);
 	upsertSessionEntry("main", "isolated:cron:nightly", { sessionId: "s3" });
+	upsertSessionEntry("main", buildTeamAttemptSessionKey("room", "main", "attempt"), { sessionId: "s4" });
 
 	const keys = (await handleSessionsList({ agentId: "main" })).sessions.map((s) => s.sessionKey);
 	assert.deepEqual(keys, ["agent:main:main"], "only the operator's own thread");

@@ -7,8 +7,8 @@ export declare const read: import("convex/server").RegisteredQuery<"public", {
     channels?: any;
     defaults?: any;
     session?: any;
-    agents?: any;
     gateway?: any;
+    agents?: any;
     tools?: any;
     skills?: any;
     org?: any;
@@ -20,8 +20,8 @@ export declare const read: import("convex/server").RegisteredQuery<"public", {
     encryptedGatewayAuthToken?: ArrayBuffer | undefined;
     encryptedGatewayAuthPassword?: ArrayBuffer | undefined;
     updatedByPid?: number | undefined;
-    updatedAtMs: number;
     bytes: number;
+    updatedAtMs: number;
     instanceId: string;
     schemaVersion: 2;
     contentSha256: string;
@@ -31,8 +31,8 @@ export declare const write: import("convex/server").RegisteredMutation<"public",
     channels?: any;
     defaults?: any;
     session?: any;
-    agents?: any;
     gateway?: any;
+    agents?: any;
     tools?: any;
     skills?: any;
     org?: any;

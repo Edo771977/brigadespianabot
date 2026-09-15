@@ -201,6 +201,13 @@ test("classifyError: OpenAI subscription 'hit your usage limit' → subscription
   assert.equal(classifyErrorReason(new Error('{"code":"usage_not_included"}')), "subscription_limit");
 });
 
+test("classifyError: claude-cli weekly-cap wording → subscription_limit", () => {
+  assert.equal(
+    classifyErrorReason(new Error("claude-cli error: You've hit your weekly limit · resets Sep 17 at 1:30am")),
+    "subscription_limit",
+  );
+});
+
 test("classifyError: subscription phrasing wins over billing patterns", () => {
   // "Add more at claude.ai/settings/usage" must not fall into billing
   // ("top up your API account") — the fix paths differ completely.

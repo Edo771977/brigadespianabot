@@ -132,6 +132,8 @@ export function detectContentIssue(
 }
 
 export interface ContentQualityRetryOptions {
+	/** Override post-settle re-prompts for non-display internal turns. */
+	reprompt?: (text: string) => Promise<void>;
 	/** Called when a retry is triggered, with the detected reason. */
 	onRetry?: (reason: NonNullable<ContentQualityIssue>) => void;
 	/** Max rewrite re-prompts for the QUALITY (slop) gate. The gate keeps forcing a
@@ -208,6 +210,7 @@ export async function runWithContentQualityRetry(
 	options: ContentQualityRetryOptions = {},
 ): Promise<void> {
 	await body();
+	const reprompt = options.reprompt ?? ((text: string) => session.prompt(text));
 
 	// Inspect the LAST assistant message off a fresh snapshot each call — async
 	// subscribers (extension hooks, telemetry) could append between a prompt
@@ -245,7 +248,7 @@ export async function runWithContentQualityRetry(
 	if (issue !== "slop") {
 		options.onRetry?.(issue);
 		options.beforeRetry?.();
-		await session.prompt(STEER_FOR[issue]);
+		await reprompt(STEER_FOR[issue]);
 		return;
 	}
 
@@ -257,7 +260,7 @@ export async function runWithContentQualityRetry(
 		// Flush FIRST: a harness backend respawns its binary on every re-prompt, and a
 		// rewrite request that omits the turn's tool calls re-runs their side effects.
 		options.beforeRetry?.();
-		await session.prompt(STEER_FOR.slop);
+		await reprompt(STEER_FOR.slop);
 		if (inspectLast() !== "slop") return; // cleared the bar — ship it
 	}
 	// Hit the cap with the reply still flagged — ship the last attempt (a response

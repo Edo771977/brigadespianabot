@@ -54,8 +54,16 @@ import {
 	type SessionStateSnapshot,
 	TICK_INTERVAL_MS,
 	type WireMessage,
+	errorShapeFromUnknown,
 } from "../protocol.js";
 import { type HelloOk, PROTOCOL_VERSION } from "../protocol/handshake.js";
+import {
+	TEAM_REQUEST_METHODS,
+	isTeamEventName,
+	type TeamExecApprovalResolved,
+	type TeamExecApprovalRequest,
+	type TeamProgressEvent,
+} from "../protocol/team.js";
 import { buildGatewayFeatures } from "./gateway-features.js";
 import { nextSeq } from "../protocol/stream-seq.js";
 // Per-turn execution path (the single canonical runtime). The gateway no
@@ -73,6 +81,8 @@ import {
 	runResilientTurn,
 	type RunSingleTurnResult,
 } from "../agents/agent-loop.js";
+import { makeTeamAttemptTurnSecurity } from "../agents/session-wiring.js";
+import { isTrustedTeamInspectionTurn } from "./team-inspection-admission.js";
 import { BrigadeExtensionRegistry, BUNDLED_MODULES, clearDiscoveryCache, loadModules } from "../agents/extensions/index.js";
 import { getActiveRegistry, setActiveRegistry } from "../agents/extensions/active-registry.js";
 import type { GatewayCaller, GatewayMethodHandler, HttpRoute, Service } from "../agents/extensions/index.js";
@@ -95,6 +105,12 @@ import { promoteQueue } from "./flush-queue.js";
 import { resolveSteerDelivery } from "./steer-delivery.js";
 import { sweepBillingKey } from "../agents/usage/maintenance-key.js";
 import { extractFrameTags, shouldDeliverFrame, type FrameTags } from "./ws-subscription-filter.js";
+import {
+	extractTeamFrameTags,
+	installTeamRoomSubscriptionThenSnapshot,
+	shouldDeliverTeamFrame,
+	type TeamRoomSubscription,
+} from "./team-subscription-filter.js";
 import { setActiveChannelManager } from "../agents/channels/active-manager.js";
 import { sanitizeReplyForChannel } from "../agents/channels/reply-sanitizer.js";
 import { type ChannelManager, startChannels } from "../agents/channels/manager.js";
@@ -162,6 +178,10 @@ import {
 	prefetchSubscriptionModels,
 } from "../integrations/provider-discovery.js";
 import { onAgentEvent } from "../agents/agent-event-bus.js";
+import {
+	TeamRuntimeService,
+	setActiveTeamRuntimeService,
+} from "../collaboration/runtime-service.js";
 import {
 	InMemoryApprovalBridge,
 	setActiveApprovalBridge,
@@ -232,6 +252,16 @@ import {
 } from "./server-methods/cron.js";
 import { handleHealthMethod } from "./server-methods/health.js";
 import { handleOrgSnapshot } from "./server-methods/org.js";
+import { createTeamMethodHandlers, TeamMethodError } from "./server-methods/team.js";
+import { toTeamExecApprovalRequest } from "./team-exec-approval.js";
+import { completedInternalTurnReply } from "./internal-turn-idempotency.js";
+import { resolveTeamModelFallbacks, type TeamModelCandidate } from "./team-model-fallback.js";
+import { createTeamProgressAdapter } from "./team-progress-adapter.js";
+import { WorkspaceAdmissionController } from "./workspace-admission.js";
+import { deliverTeamCoordinatorReturn } from "../collaboration/coordinator-return.js";
+import { resolveConfiguredRoomCoordinatorAgentId } from "../collaboration/room-coordinator.js";
+import { parseTeamAttemptSessionKey } from "../collaboration/session-key.js";
+import { persistTeamChatReply } from "../collaboration/team-chat-message.js";
 import { buildSkillStatusReport } from "../agents/skills/status.js";
 import { installSkill } from "../agents/skills/install.js";
 import type { SkillInstallSpec } from "../agents/skills/install-spec.js";
@@ -2091,6 +2121,10 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 			// to route a fresh prompt through the mid-turn steer path which
 			// throws.
 			isAgentRunning: countActiveLiveSessionsForAgent(targetAgentId) > 0,
+			// Session-specific routing signal. Team workers can keep `main` busy in
+			// another room while this human chat is idle; using the agent-wide flag
+			// made the UI steer into a session that was not actually running.
+			isSessionRunning: liveSessionsByKey.has(targetSessionKey),
 			messageCount: snapshotCache?.messageCount ?? 0,
 			firstRunBootstrap: computeFirstRunBootstrap(snapshotCache?.messageCount ?? 0),
 			agentName: computeAgentName(targetAgentId),
@@ -2245,6 +2279,11 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 	const clientBroadScope = new Set<string>();
 	const clientAgentSubs = new Map<string, Set<string>>();
 	const clientSessionSubs = new Map<string, Set<string>>();
+	/**
+	 * Team Mode is always room-scoped and opt-in. Unlike the legacy
+	 * agent/session stream, an empty map never means "receive everything".
+	 */
+	const clientTeamRoomSubs = new Map<string, Map<string, TeamRoomSubscription>>();
 
 	/**
 	 * Per-session monotonic sequence for the ordered, recoverable stream.
@@ -2342,6 +2381,23 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 	const unsubscribeSession = (connId: string, sessionIdValue: string): void => {
 		clientSessionSubs.get(connId)?.delete(sessionIdValue);
 	};
+	const subscribeTeamRoom = (
+		connId: string,
+		roomIdValue: string,
+		includeProgress: boolean,
+	): void => {
+		let rooms = clientTeamRoomSubs.get(connId);
+		if (!rooms) {
+			rooms = new Map();
+			clientTeamRoomSubs.set(connId, rooms);
+		}
+		rooms.set(roomIdValue, { includeProgress });
+	};
+	const unsubscribeTeamRoom = (connId: string, roomIdValue: string): void => {
+		const rooms = clientTeamRoomSubs.get(connId);
+		rooms?.delete(roomIdValue);
+		if (rooms?.size === 0) clientTeamRoomSubs.delete(connId);
+	};
 
 	/**
 	 * Filter predicate: should `connId` receive an event tagged with the
@@ -2355,6 +2411,16 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 			clientSessionSubs.get(connId),
 			tags,
 			clientBroadScope.has(connId) ? "agent" : "session",
+		);
+	const connWantsTeamFrame = (
+		connId: string,
+		event: "team-event" | "team-progress" | "team-approval-request" | "team-approval-resolved",
+		payload: unknown,
+	): boolean =>
+		shouldDeliverTeamFrame(
+			clientTeamRoomSubs.get(connId),
+			extractTeamFrameTags(payload),
+			event,
 		);
 
 	/** Send one event to all connected clients (or a filtered subset). */
@@ -2417,6 +2483,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 		// and the turn hangs until the approval times out.
 		const frameTags = extractFrameTags(payload);
 		const { agentId: frameAgentId, sessionId: frameSessionId } = frameTags;
+		const isTeamEvent = isTeamEventName(event);
 		// Stamp a per-session monotonic seq on the ordered transcript stream
 		// (`pi`). This is the gap detector: a client that sees seq jump knows it
 		// missed a frame and issues `resume`. Only `pi` frames carry seq — they
@@ -2513,7 +2580,10 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 			if (!ready) continue;
 			// No connId yet (race between socket open + onConnection assign):
 			// best-effort send (matches old behaviour).
-			if (!ready.connId || connWantsFrame(ready.connId, frameTags)) {
+			const wantsFrame = isTeamEvent
+				? ready.connId !== undefined && connWantsTeamFrame(ready.connId, event, payload)
+				: !ready.connId || connWantsFrame(ready.connId, frameTags);
+			if (wantsFrame) {
 				// Full frames unless the client explicitly asked for deltas. A
 				// connection with no id yet (the race between socket open and
 				// onConnection assigning one) gets the full frame too — we cannot
@@ -2625,9 +2695,26 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 	// any tool-approval prompt from the very first turn is bridged
 	// through the WS instead of bouncing back to the legacy "ask the
 	// operator out-of-band" refusal.
+	const teamExecApprovalRevisions = new Map<string, number>();
+	const bumpTeamExecApprovalRevision = (roomId: string): number => {
+		const revision = (teamExecApprovalRevisions.get(roomId) ?? 0) + 1;
+		teamExecApprovalRevisions.set(roomId, revision);
+		return revision;
+	};
 	const approvalBridge = new InMemoryApprovalBridge((request) => {
+		const unroutedTeamApproval = toTeamExecApprovalRequest(request);
+		const teamApproval = unroutedTeamApproval
+			? { ...unroutedTeamApproval, revision: bumpTeamExecApprovalRevision(unroutedTeamApproval.roomId) }
+			: undefined;
+		if (teamApproval) {
+			// Team attempts are room-private. Do not leak their commands onto the
+			// legacy agent/session firehose; room subscribers get one explicit row.
+			broadcast("team-approval-request", teamApproval);
+			return;
+		}
 		broadcast("approval-request", {
 			id: request.id,
+			...(request.createdAt !== undefined ? { createdAt: request.createdAt } : {}),
 			command: request.command,
 			toolName: request.toolName,
 			cwd: request.cwd,
@@ -2646,6 +2733,19 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 			...(request.agentId !== undefined ? { agentId: request.agentId } : {}),
 			...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
 		});
+	}, (request, decision) => {
+		const approval = toTeamExecApprovalRequest(request);
+		if (!approval) return;
+		broadcast("team-approval-resolved", {
+			id: approval.id,
+			roomId: approval.roomId,
+			attemptId: approval.attemptId,
+			agentId: approval.agentId,
+			sessionId: approval.sessionId,
+			decision: decision.kind,
+			resolvedAt: Date.now(),
+			revision: bumpTeamExecApprovalRevision(approval.roomId),
+		} satisfies TeamExecApprovalResolved);
 	});
 	setActiveApprovalBridge(approvalBridge);
 
@@ -3027,6 +3127,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 		session: AgentSession,
 		sessionKeyForTurn: string,
 		agentIdForTurn: string,
+		broadcastPiEvents = true,
 	): (() => void) => {
 		liveSessionsByKey.set(sessionKeyForTurn, session);
 		// Seed this session's ledger from its own transcript, ONCE. `getSessionStats`
@@ -3264,11 +3365,17 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 			// sessionId so `connWantsFrame` routes pi events to the operator
 			// watching THIS agent's turn only. Untagged frames fall through
 			// to the back-compat "broadcast to everyone" branch.
-			broadcast("pi", {
-				event: piEventForWire,
-				agentId: agentIdForTurn,
-				sessionId: sessionKeyForTurn,
-			});
+			// Team attempts are private worker transcripts. Their useful, redacted
+			// progress is published through team-progress/team-event; forwarding
+			// raw Pi frames would expose assignment envelopes and model internals to
+			// legacy clients that intentionally have no subscription filter.
+			if (broadcastPiEvents) {
+				broadcast("pi", {
+					event: piEventForWire,
+					agentId: agentIdForTurn,
+					sessionId: sessionKeyForTurn,
+				});
+			}
 			// Coalesced: this fires per TOKEN, and the header is read by a human.
 			// Turn boundaries below flush immediately.
 			broadcastStateCoalesced();
@@ -3527,19 +3634,21 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 		}
 		// Wave I — forward the routing tags the bus event carries so child pi
 		// frames are filtered identically to top-level ones.
-		broadcast("pi", {
-			event: event.piEvent,
-			...(event.subagentDepth ? { subagentDepth: event.subagentDepth } : {}),
-			...(isSynthetic ? { synthetic: true } : {}),
-			agentId: event.agentId,
-			sessionId: event.sessionId,
+		if (!event.sessionId || !parseTeamAttemptSessionKey(event.sessionId)) {
+			broadcast("pi", {
+				event: event.piEvent,
+				...(event.subagentDepth ? { subagentDepth: event.subagentDepth } : {}),
+				...(isSynthetic ? { synthetic: true } : {}),
+				agentId: event.agentId,
+				sessionId: event.sessionId,
 			// Route a child's frames to whoever is watching the PARENT thread. Its
 			// own key (`agent:<childAgent>:subagent:<uuid>`) shares no prefix with
 			// the parent's, so without this the only rule that matched was the
 			// agent-wide one — which is what pulled other sessions' work into the
 			// operator's view.
-			...(resolvedParentKey ? { parentSessionKey: resolvedParentKey } : {}),
-		});
+				...(resolvedParentKey ? { parentSessionKey: resolvedParentKey } : {}),
+			});
+		}
 	});
 
 	// Lifecycle bus subscriber (Phase 5b): translate `runBrigadeTurnLoop`
@@ -3634,6 +3743,12 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 				});
 				break;
 			case "tool-blocked":
+				if (event.sessionKey && parseTeamAttemptSessionKey(event.sessionKey)) {
+					// Team attempt commands are room-private. Their approval card is
+					// delivered through `team-approval-request`; never mirror command
+					// details onto the legacy agent/session log stream.
+					break;
+				}
 				// Surface guard/exec-gate refusals to connect-mode clients as a
 				// warn log. The model ALSO sees Pi's synthetic error tool_result
 				// (broadcast via "pi"), but this gives the operator an explicit
@@ -3677,6 +3792,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 	// NOT by a global lock. Each lane's runs are serialised; per-lane state
 	// observations (the snapshot) reflect the in-flight turn for that lane.
 	let turnChainTail = Promise.resolve(); // kept ONLY for graceful-shutdown wait
+	const workspaceAdmission = new WorkspaceAdmissionController();
 	const runOnLane = <T>(lane: CommandLaneId, fn: () => Promise<T>): Promise<T> => {
 		const run = enqueueInLane(lane, fn);
 		turnChainTail = run.then(
@@ -3695,6 +3811,8 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 	 */
 	const runGatewayTurn = (turn: {
 		text: string;
+		/** Caller-owned correlation id (Team attempt/runtime dispatch). */
+		runId?: string;
 		/**
 		 * OPTIONAL inbound IMAGE blocks to send INLINE with this turn's user
 		 * message (A3 — "auto-see inbound images"). Each is `{ data: <raw
@@ -3706,6 +3824,13 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 		 * callers, so their turn is byte-identical (string-only prompt).
 		 */
 		images?: ReadonlyArray<{ data: string; mimeType: string }>;
+		/** Optional input preparation that must run inside this session's FIFO.
+		 * Browser attachment inspection uses this so two rapid prompts cannot
+		 * finish preprocessing out of order before entering the turn lane. */
+		prepareInput?: () => Promise<{
+			text: string;
+			images?: ReadonlyArray<{ data: string; mimeType: string }>;
+		}>;
 		sessionKey: string;
 		/**
 		 * Routed agent id for this turn (output of the 8-tier route resolver
@@ -3718,6 +3843,17 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 		 */
 		agentId?: string;
 		signal?: AbortSignal;
+		/** Optional execution-scoped overrides used by delegated/team turns. */
+		workspaceDir?: string;
+		thinkingLevel?: "off" | "low" | "medium" | "high";
+		/** Optional execution-scoped capability allowlist (cron/Team). */
+		toolsAllow?: string[];
+		/** Synthetic coordinator returns may inspect Team state but cannot mutate it. */
+		teamToolReadOnly?: boolean;
+		/** Optional ordered model fallbacks for this private delegated turn. */
+		modelFallbacks?: TeamModelCandidate[];
+		/** Use Brigade's delegated/minimal prompt posture for a Team worker. */
+		teamMode?: boolean;
 		/**
 		 * Channel-supplied owner flag. `true` for self-chat / TUI-equivalent
 		 * traffic, `false` for approved peers. Drives the BOOTSTRAP-nudge
@@ -3759,6 +3895,15 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 		 * final-only fallback path stays authoritative).
 		 */
 		onReplyDelta?: (accumulatedText: string) => void;
+		/** Keep a private/background turn out of the generic Pi WebSocket feed. */
+		broadcastPiEvents?: boolean;
+		/** Persist the input as a hidden custom record, not an operator user row. */
+		internalTurn?: boolean;
+		/** Durable key used to suppress replay of an already-settled hidden turn. */
+		internalTurnId?: string;
+		/** Team runtime hooks: queued workspace time is not active model time. */
+		onAdmissionWaitStart?: () => void;
+		onAdmissionWaitEnd?: () => void;
 	}): Promise<RunSingleTurnResult> => {
 		// Pick the lane:
 		//   - The BOOT operator's primary session (`agent:<bootAgentId>:main`)
@@ -3778,6 +3923,9 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 			parsedKey.rest === "main";
 		const lane = isBootMainSession ? CommandLane.Main : sessionLane(turn.sessionKey);
 		return runOnLane(lane, async () => {
+			const preparedInput = turn.prepareInput
+				? await turn.prepareInput()
+				: { text: turn.text, ...(turn.images ? { images: turn.images } : {}) };
 			// Per-turn cleanup — LOCAL to this invocation. Turn A's onSessionReady
 			// (a fallback rebuild inside the same turn) calls THIS cleanup, not a
 			// neighbouring turn's. Replaces the old module-level `currentTurnCleanup`
@@ -3819,7 +3967,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 			const keyAgentId = parseAgentSessionKey(turn.sessionKey)?.agentId;
 			const targetAgentId = turn.agentId ?? keyAgentId ?? agentId;
 			const turnSessionKey = turn.sessionKey;
-			const runId = crypto.randomUUID();
+			const runId = turn.runId?.trim() || crypto.randomUUID();
 
 			registerLiveSession({
 				sessionKey: turnSessionKey,
@@ -3852,7 +4000,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 				// Include the configured fallback unconditionally — the per-turn path
 				// runs the never-miss resolver on it, so we don't pre-filter with a
 				// static `find` (which would drop a valid-but-uncatalogued fallback).
-				const fallbacks =
+				const configuredFallbacks =
 					fallbackProvider && fallbackModelId ? [{ provider: fallbackProvider, modelId: fallbackModelId }] : [];
 
 				// Per-agent dispatch: read the target agent's currently-selected
@@ -3875,7 +4023,14 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 					: null;
 				const turnProvider = turnPin?.provider ?? turnRuntime.provider;
 				const turnModelId = turnPin?.modelId ?? turnRuntime.modelId;
-				const turnThinkingLevel = turnRuntime.thinkingLevel;
+				const turnThinkingLevel = turn.thinkingLevel ?? turnRuntime.thinkingLevel;
+				const fallbacks = turn.modelFallbacks
+					? resolveTeamModelFallbacks({
+						primary: { provider: turnProvider, modelId: turnModelId },
+						coordinator: turn.modelFallbacks[0],
+						configured: [...turn.modelFallbacks.slice(1), ...configuredFallbacks],
+					})
+					: configuredFallbacks;
 
 				// C2: forward the per-agent `workspace` override from cfg so the
 				// agent-loop's resolveAgentWorkspaceDir() honours it. Without this,
@@ -3886,27 +4041,38 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 					| undefined) ?? {};
 				const perAgentEntryNow = agentsMapNow[targetAgentId];
 				const perAgentWorkspace =
-					perAgentEntryNow && typeof perAgentEntryNow.workspace === "string"
+					turn.workspaceDir?.trim() ||
+					(perAgentEntryNow && typeof perAgentEntryNow.workspace === "string"
 						? perAgentEntryNow.workspace.trim()
-						: "";
+						: "");
+				const effectiveWorkspaceDir = resolveAgentWorkspaceDir(
+					targetAgentId,
+					perAgentWorkspace || undefined,
+				);
+				const admissionSignal = turn.signal
+					? AbortSignal.any([turn.signal, turnAbortController.signal])
+					: turnAbortController.signal;
 
 				// If a channel inbound passed an AbortSignal, abort the in-flight Pi
 				// session when it fires (so `/stop` from the chat actually cancels).
 				turn.signal?.addEventListener("abort", onAbort, { once: true });
-				const result = await runResilientTurn({
+				const executeTurn = () => runResilientTurn({
+					runId,
 					agentId: targetAgentId,
 					provider: turnProvider,
 					modelId: turnModelId,
-					message: turn.text,
+					message: preparedInput.text,
 					// A3: forward inbound image blocks (set ONLY by the channel
 					// pipeline). runSingleTurn gates them on the resolved model's
 					// vision capability; undefined here for TUI / cron / RPC →
 					// string-only prompt, byte-identical.
-					...(turn.images && turn.images.length > 0 ? { images: turn.images } : {}),
+					...(preparedInput.images && preparedInput.images.length > 0
+						? { images: preparedInput.images }
+						: {}),
 					sessionKey: turn.sessionKey,
 					thinkingLevel: turnThinkingLevel as "off" | "low" | "medium" | "high",
 					fallbacks,
-					signal: turn.signal,
+					signal: admissionSignal,
 					...(perAgentWorkspace ? { workspaceDir: perAgentWorkspace } : {}),
 					// Forward the channel's senderIsOwner verdict (defaults to true
 					// when undefined — TUI / direct RPC calls are always operator).
@@ -3922,6 +4088,12 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 					// site narrows this turn's toolset by name. Undefined elsewhere
 					// → toolset unchanged.
 					...(turn.toolPolicy !== undefined ? { toolPolicy: turn.toolPolicy } : {}),
+					...(turn.toolsAllow !== undefined ? { toolsAllow: turn.toolsAllow } : {}),
+					...(turn.teamToolReadOnly === true ? { teamToolReadOnly: true } : {}),
+					...(turn.teamMode === true ? { teamMode: true } : {}),
+					...(turn.internalTurn === true ? { internalTurn: true } : {}),
+					...(turn.internalTurnId ? { internalTurnId: turn.internalTurnId } : {}),
+					teamAgentIsRunnable: (candidate) => perAgentRuntime.has(candidate),
 					onSessionReady: (session) => {
 						// A fallback candidate builds a fresh session; tear down the
 						// previous candidate's wiring before attaching the new one.
@@ -3930,19 +4102,51 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 						if (turnState.cleanup) turnState.cleanup();
 						turnState.activeSession = session;
 						const detachStream = attachReplyDeltaForwarder(session, turn.onReplyDelta);
-						const detachTurn = attachTurnSession(session, turnSessionKey, targetAgentId);
+						const detachTurn = attachTurnSession(
+							session,
+							turnSessionKey,
+							targetAgentId,
+							turn.broadcastPiEvents !== false,
+						);
 						turnState.cleanup = () => {
 							detachStream();
 							detachTurn();
 						};
 					},
 				});
+				// This is the one safe admission bypass: a trusted synthetic Team
+				// notification with only the read-only `team` tool. It cannot touch the
+				// workspace, and admitting it normally can self-deadlock when the same
+				// coordinator agent is paused inside a Team task awaiting approval.
+				const trustedTeamInspection = isTrustedTeamInspectionTurn(turn);
+				const result = trustedTeamInspection
+					? await executeTurn()
+					: await workspaceAdmission.run({
+						workspaceDir: effectiveWorkspaceDir,
+						mode: turn.teamMode === true ? "team" : "ordinary",
+						signal: admissionSignal,
+						...(turn.onAdmissionWaitStart
+							? { onWaitStart: turn.onAdmissionWaitStart }
+							: {}),
+						...(turn.onAdmissionWaitEnd
+							? { onWaitEnd: turn.onAdmissionWaitEnd }
+							: {}),
+					}, executeTurn);
+				const settledRuntimeContext = tryGetRuntimeContext();
+				if (settledRuntimeContext) {
+					await persistTeamChatReply({
+						store: settledRuntimeContext.store.collaboration,
+						sessionKey: turnSessionKey,
+						reply: result.reply,
+						turnId: runId,
+					});
+				}
 				// Queue a debounced, batched memory-extraction sweep over the settled
 				// transcript (off the hot path; see scheduleExtraction). Thread the
 				// routed agent id so the sweep runs against the right workspace and
 				// uses the right model — boot agent for single-agent callers, the
 				// resolved agent for channel-routed multi-agent inbounds.
-				scheduleExtraction({
+				if (turn.internalTurn !== true) scheduleExtraction({
 					agentId: targetAgentId,
 					sessionId: result.sessionId,
 					messages: result.messages,
@@ -4027,16 +4231,6 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 				// for a voice note, an `analyze_media` call-to-action for a PDF.
 				// Undefined for every historical caller (cron / sub-agent / RPC / a
 				// pre-attachment TUI), whose turn stays byte-identical.
-				const composed = await composeAttachmentTurn(p.text, p.attachments, {
-					registry: getActiveRegistry(),
-					config: await loadConfig(),
-				});
-				if (composed.rejected.length > 0) {
-					createSubsystemLogger("gateway/attachments").warn("prompt attachments rejected", {
-						sessionKey: targetSessionKey,
-						rejected: composed.rejected.map((r) => `${r.path}: ${r.reason}`),
-					});
-				}
 				// Wave N4 — no hasLiveSession pre-flight. The session-lane FIFO
 				// inside `runGatewayTurn` (sessionLane(turn.sessionKey)) already
 				// serialises every prompt on the same session: a second client's
@@ -4047,8 +4241,23 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 				// session multi-client (e.g. TUI + chat both attached to
 				// `agent:main:main`).
 				await runGatewayTurn({
-					text: composed.text,
-					...(composed.images ? { images: composed.images } : {}),
+					text: p.text,
+					prepareInput: async () => {
+						const composed = await composeAttachmentTurn(p.text, p.attachments, {
+							registry: getActiveRegistry(),
+							config: await loadConfig(),
+						});
+						if (composed.rejected.length > 0) {
+							createSubsystemLogger("gateway/attachments").warn("prompt attachments rejected", {
+								sessionKey: targetSessionKey,
+								rejected: composed.rejected.map((r) => `${r.path}: ${r.reason}`),
+							});
+						}
+						return {
+							text: composed.text,
+							...(composed.images ? { images: composed.images } : {}),
+						};
+					},
 					sessionKey: targetSessionKey,
 					agentId: targetAgentId,
 				});
@@ -5284,7 +5493,10 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 						sessionId?: string;
 						deltas?: boolean;
 						scope?: "session" | "agent";
+						roomId?: string;
+						includeProgress?: boolean;
 					};
+				let teamRoomSummary: ResponseFor["subscribe"] = undefined;
 				try {
 					if (reqFrame.method === "subscribe") {
 						// GUARD THE SUBSCRIPTION, NOT JUST THE READS.
@@ -5332,6 +5544,32 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 								return;
 							}
 						}
+						const roomId = p.roomId?.trim();
+						if (roomId) {
+							const previous = clientTeamRoomSubs.get(connId)?.get(roomId);
+							teamRoomSummary = await installTeamRoomSubscriptionThenSnapshot(
+								() => subscribeTeamRoom(connId, roomId, p.includeProgress === true),
+								async () => {
+									const roomList = await teamHandlers["team.rooms.list"]({ includeArchived: true });
+									const summary = roomList.summaries.find((candidate) => candidate.roomId === roomId);
+									if (!summary) {
+										throw new TeamMethodError(
+											"TEAM_NOT_FOUND",
+											`room not found: ${roomId}`,
+											{ kind: "room", id: roomId },
+										);
+									}
+									return summary;
+								},
+								() => {
+									if (previous) {
+										subscribeTeamRoom(connId, roomId, previous.includeProgress);
+									} else {
+										unsubscribeTeamRoom(connId, roomId);
+									}
+								},
+							);
+						}
 						if (p.agentId) subscribeAgent(connId, p.agentId.trim());
 						if (p.sessionId) subscribeSession(connId, p.sessionId.trim());
 						// Full frames are the default; `deltas: true` opts a client IN
@@ -5347,8 +5585,14 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 					} else {
 						if (p.agentId) unsubscribeAgent(connId, p.agentId.trim());
 						if (p.sessionId) unsubscribeSession(connId, p.sessionId.trim());
+						if (p.roomId) unsubscribeTeamRoom(connId, p.roomId.trim());
 					}
-					const response: Frame = { type: "res", id: reqFrame.id, ok: true };
+					const response: Frame = {
+						type: "res",
+						id: reqFrame.id,
+						ok: true,
+						...(teamRoomSummary ? { payload: teamRoomSummary } : {}),
+					};
 					if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(response));
 					// Wave K — push a fresh per-binding snapshot on subscribe so
 					// the client's header reflects the agent it just bound to
@@ -5377,10 +5621,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 						type: "res",
 						id: reqFrame.id,
 						ok: false,
-						error: {
-							code: "internal",
-							message: err instanceof Error ? err.message : String(err),
-						},
+						error: errorShapeFromUnknown(err),
 					};
 					if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(response));
 				}
@@ -5398,19 +5639,13 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 				if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(response));
 				opts.consoleStream?.wsResponse(reqFrame.method, reqFrame.id, true, Date.now() - startedAt);
 			} catch (err) {
-				// Honour a typed error code if the handler set one (e.g. the
-				// `scope-insufficient` thrown by the default-branch scope gate)
-				// so the client sees an auth-shaped failure instead of a
-				// generic "internal" bucket.
-				const code = (err as { code?: string } | undefined)?.code ?? "internal";
 				const response: Frame = {
 					type: "res",
 					id: reqFrame.id,
 					ok: false,
-					error: {
-						code,
-						message: err instanceof Error ? err.message : String(err),
-					},
+					// Preserve the typed Team/auth error code plus its safe retry and
+					// details fields instead of collapsing everything into `internal`.
+					error: errorShapeFromUnknown(err),
 				};
 				if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(response));
 				opts.consoleStream?.wsResponse(reqFrame.method, reqFrame.id, false, Date.now() - startedAt);
@@ -5422,6 +5657,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 			clientConnIds.delete(ws);
 			clientAgentSubs.delete(connId);
 			clientSessionSubs.delete(connId);
+			clientTeamRoomSubs.delete(connId);
 			clientDeltaFrames.delete(connId);
 			clientBroadScope.delete(connId);
 			opts.consoleStream?.clientDisconnected(clientLabel, clients.size);
@@ -5432,6 +5668,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 			clientConnIds.delete(ws);
 			clientAgentSubs.delete(connId);
 			clientSessionSubs.delete(connId);
+			clientTeamRoomSubs.delete(connId);
 			clientDeltaFrames.delete(connId);
 			clientBroadScope.delete(connId);
 		});
@@ -5588,6 +5825,179 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 	// already-defined `runGatewayTurn` so each method dispatches through the
 	// existing serialized turn queue.
 	const disposeHandlers: Array<() => void> = [];
+	const runtimeContext = tryGetRuntimeContext();
+	if (!runtimeContext) throw new Error("Team runtime requires an initialized Brigade store");
+	// Outbox delivery is at-least-once. Suppress a same-process redelivery when
+	// broadcasting succeeded but the subsequent durable ack had to be retried.
+	// Room UIs still dedupe by eventId/roomSeq across reconnects and restarts.
+	const publishedTeamEventIds = new Set<string>();
+	const rememberPublishedTeamEvent = (eventId: string): void => {
+		publishedTeamEventIds.delete(eventId);
+		publishedTeamEventIds.add(eventId);
+		while (publishedTeamEventIds.size > 10_000) {
+			const oldest = publishedTeamEventIds.values().next().value;
+			if (typeof oldest !== "string") break;
+			publishedTeamEventIds.delete(oldest);
+		}
+	};
+	const coordinatorReturnAlreadyCompleted = async (
+		coordinatorAgentId: string,
+		sessionKey: string,
+		eventId: string,
+	): Promise<boolean> => {
+		let sessionId: string | undefined;
+		try {
+			sessionId = readSessionStore(coordinatorAgentId).sessions?.[sessionKey]?.sessionId;
+		} catch {
+			return false;
+		}
+		if (!sessionId) return false;
+		try {
+			const records = await runtimeContext.store.messages.readTranscript(coordinatorAgentId, sessionId);
+			const reply = completedInternalTurnReply(records, eventId);
+			if (!reply) return false;
+			await persistTeamChatReply({
+				store: runtimeContext.store.collaboration,
+				sessionKey,
+				reply,
+				turnId: eventId,
+			});
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const teamRuntime = new TeamRuntimeService({
+		store: runtimeContext.store.collaboration,
+		workerId: `gateway:${gatewayEpoch}:${process.pid}`,
+		defaultAgentId: agentId,
+		globalConcurrency: 8,
+		// This is active model time. Durable approval/handoff waits pause it,
+		// while a run's maxDurationMs remains an independent wall-clock budget.
+		taskTimeoutMs: 30 * 60_000,
+		resolveAgentId: (task) => {
+			return task.assignedAgentId ?? agentId;
+		},
+		validateAgentId: (requested) => perAgentRuntime.has(requested),
+		runTurn: async (request) => {
+			let progressTail = Promise.resolve();
+			const toProgressUpdate = createTeamProgressAdapter();
+			const room = await runtimeContext.store.collaboration.getRoom(request.executionContext.roomId);
+			const coordinatorAgentId = room
+				? await resolveConfiguredRoomCoordinatorAgentId(room, (candidate) => perAgentRuntime.has(candidate))
+				: undefined;
+			const coordinatorRuntime = coordinatorAgentId
+				? perAgentRuntime.get(coordinatorAgentId)
+				: undefined;
+			const detachProgress = onAgentEvent((event) => {
+				if (!("runId" in event) || event.runId !== request.executionContext.runtimeRunId) return;
+				const update = toProgressUpdate(event);
+				if (!update) return;
+				progressTail = progressTail
+					.then(() => request.onProgress(update))
+					.catch(() => undefined);
+			});
+			try {
+				const result = await runGatewayTurn({
+					text: request.prompt,
+					runId: request.executionContext.runtimeRunId,
+					sessionKey: request.sessionKey,
+					agentId: request.agentId,
+					signal: request.signal,
+					onAdmissionWaitStart: request.onAdmissionWaitStart,
+					onAdmissionWaitEnd: request.onAdmissionWaitEnd,
+					// A Team worker is a leased capability, not the operator. This
+					// prevents owner-memory recall/extraction and owner-only tool use.
+					...makeTeamAttemptTurnSecurity(),
+					// If this teammate's provider is unavailable, retain the teammate's
+					// persona/workspace/lease but rotate inference to the room lead's
+					// known runtime model before consulting ordinary configured fallbacks.
+					...(coordinatorRuntime ? {
+						modelFallbacks: [{
+							provider: coordinatorRuntime.provider,
+							modelId: coordinatorRuntime.modelId,
+						}],
+					} : {}),
+					// The assignment envelope is runtime control data, not an operator
+					// chat message. Persist it as a hidden custom turn so ordinary session
+					// history can never misrepresent it as user-authored content.
+					internalTurn: true,
+					// Clients receive the safe Team event contract, never a worker's
+					// raw prompt/transcript stream.
+					broadcastPiEvents: false,
+				});
+				return {
+					reply: result.reply,
+					usage: {
+						tokens: result.usage.totalTokens,
+						costUsd: result.usage.costUsd,
+						costComplete: result.usage.costComplete,
+					},
+				};
+			} finally {
+				detachProgress();
+				await progressTail;
+			}
+		},
+		outboxPublisher: {
+			publish: async (event, signal) => {
+				if (signal.aborted) throw signal.reason;
+				if (publishedTeamEventIds.has(event.eventId)) return;
+				broadcast("team-event", event);
+				await deliverTeamCoordinatorReturn({
+					event,
+					store: runtimeContext.store.collaboration,
+					defaultAgentId: agentId,
+					validateAgentId: (requested) => perAgentRuntime.has(requested),
+					wake: async (target) => {
+						// Await the real coordinator turn before acknowledging the outbox.
+						// A provider failure therefore leaves the exact hidden event retryable.
+						if (await coordinatorReturnAlreadyCompleted(target.agentId, target.sessionKey, event.eventId)) {
+							return;
+						}
+						await runGatewayTurn({
+							text: target.text,
+							runId: event.eventId,
+							agentId: target.agentId,
+							sessionKey: target.sessionKey,
+							signal,
+							senderIsOwner: true,
+							toolsAllow: ["team"],
+							teamToolReadOnly: true,
+							internalTurn: true,
+							internalTurnId: event.eventId,
+						});
+					},
+				});
+				rememberPublishedTeamEvent(event.eventId);
+			},
+		},
+		onProgress: (progress) => {
+			broadcast("team-progress", progress satisfies TeamProgressEvent);
+		},
+	});
+	setActiveTeamRuntimeService(teamRuntime);
+
+	const teamHandlers = createTeamMethodHandlers({
+		store: runtimeContext.store.collaboration,
+		validateAgentId: (requested) => perAgentRuntime.has(requested),
+		actorId: "owner",
+		kickCoordinator: () => teamRuntime.kick(),
+		listPendingExecApprovals: (roomId) => approvalBridge
+			.listPending()
+			.map((request) => toTeamExecApprovalRequest(
+				request,
+				Date.now(),
+				teamExecApprovalRevisions.get(roomId) ?? 0,
+			))
+			.filter((request): request is TeamExecApprovalRequest => request?.roomId === roomId),
+		getExecApprovalRevision: (roomId) => teamExecApprovalRevisions.get(roomId) ?? 0,
+	});
+	for (const method of TEAM_REQUEST_METHODS) {
+		const handler = teamHandlers[method] as (params: unknown) => Promise<unknown>;
+		disposeHandlers.push(registerGatewayHandler(method, handler));
+	}
+	await teamRuntime.start();
 
 	// Wave O0.5/O0.6 — server-side access guard. The closure resolves
 	// the caller's visibility + A2A policy from the *current* live
@@ -5609,6 +6019,15 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 	let configReadWarningSurfaced = false;
 	const buildSessionsAccessCheck = (): SessionsHandlerAccessCheck => {
 		return ({ action, targetSessionKey }) => {
+			// Leased Team attempts are implementation-private transcripts. They may
+			// only be inspected through the Team APIs, where room/run authorization,
+			// result sanitization, and durable state semantics are enforced.
+			if (parseTeamAttemptSessionKey(targetSessionKey)) {
+				return {
+					allowed: false,
+					reason: "Team attempt sessions are private runtime state; use Team run status",
+				};
+			}
 			// SAME-AGENT operator pass. The WS requester is the LOCAL OPERATOR
 			// (localhost-bind + admin scope), anchored to the boot agent. The
 			// operator owns EVERY session of their own agent, so any target under
@@ -5988,8 +6407,16 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 							const result = await runGatewayTurn({
 								text: turn.message,
 								sessionKey: turn.sessionKey,
+								runId: turn.runId,
 								...(turn.agentId ? { agentId: turn.agentId } : {}),
 								...(turn.signal ? { signal: turn.signal } : {}),
+								...(turn.workspaceDir ? { workspaceDir: turn.workspaceDir } : {}),
+								...(turn.thinking === "off" ||
+									turn.thinking === "low" ||
+									turn.thinking === "medium" ||
+									turn.thinking === "high"
+									? { thinkingLevel: turn.thinking }
+									: {}),
 							});
 							return {
 								ok: true,
@@ -6680,6 +7107,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 				sessionKey: params.sessionKey,
 				agentId: params.agentId,
 				senderIsOwner: true,
+				internalTurn: true,
 			});
 			if (deliveryContext?.channel && deliveryContext.to && result?.reply?.trim()) {
 				void deliverReplyToChannel(deliveryContext, result.reply);
@@ -7566,6 +7994,16 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 				markGatewayDraining();
 			} catch {
 				/* best-effort */
+			}
+			// Stop Team scheduling before tearing down handlers, transports, or
+			// sessions. Durable leases remain recoverable if a provider ignores
+			// abort; the next boot reconciles them through fencing.
+			try {
+				await teamRuntime.stop();
+			} catch {
+				/* best-effort; normal session shutdown below is the fallback */
+			} finally {
+				setActiveTeamRuntimeService(undefined);
 			}
 			// Tell connected clients we're going down gracefully BEFORE the
 			// sockets close, so a web/mobile UI shows "reconnecting…" and

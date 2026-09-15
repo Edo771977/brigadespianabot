@@ -1,12 +1,12 @@
 export declare const listFacts: import("convex/server").RegisteredQuery<"public", {
     limit?: number | undefined;
-    lifecycle?: "active" | "archived" | "pruned" | undefined;
+    lifecycle?: "archived" | "active" | "pruned" | undefined;
     workspaceId: string;
 }, Promise<{
     _id: import("convex/values").GenericId<"memoryFacts">;
     _creationTime: number;
     metadata?: any;
-    status?: "asserted" | "provisional" | "confirmed" | "disputed" | "retracted" | undefined;
+    status?: "confirmed" | "asserted" | "provisional" | "disputed" | "retracted" | undefined;
     sourceType?: "dream" | "user_instruction" | "owner_message" | "channel_message" | "tool_output" | "retrieved_document" | "compaction" | "extraction" | undefined;
     sourceTurn?: string | undefined;
     supersedes?: string[] | undefined;
@@ -38,12 +38,12 @@ export declare const listFacts: import("convex/server").RegisteredQuery<"public"
     decayRate: number;
     accessCount: number;
     lastAccessedAt: number;
-    lifecycle: "active" | "archived" | "pruned";
+    lifecycle: "archived" | "active" | "pruned";
     workspaceId: string;
 }[]>>;
 export declare const writeFact: import("convex/server").RegisteredMutation<"public", {
     metadata?: any;
-    status?: "asserted" | "provisional" | "confirmed" | "disputed" | "retracted" | undefined;
+    status?: "confirmed" | "asserted" | "provisional" | "disputed" | "retracted" | undefined;
     sourceType?: "dream" | "user_instruction" | "owner_message" | "channel_message" | "tool_output" | "retrieved_document" | "compaction" | "extraction" | undefined;
     sourceTurn?: string | undefined;
     supersedes?: string[] | undefined;
@@ -77,7 +77,7 @@ export declare const writeFact: import("convex/server").RegisteredMutation<"publ
     _id: import("convex/values").GenericId<"memoryFacts">;
     _creationTime: number;
     metadata?: any;
-    status?: "asserted" | "provisional" | "confirmed" | "disputed" | "retracted" | undefined;
+    status?: "confirmed" | "asserted" | "provisional" | "disputed" | "retracted" | undefined;
     sourceType?: "dream" | "user_instruction" | "owner_message" | "channel_message" | "tool_output" | "retrieved_document" | "compaction" | "extraction" | undefined;
     sourceTurn?: string | undefined;
     supersedes?: string[] | undefined;
@@ -109,7 +109,7 @@ export declare const writeFact: import("convex/server").RegisteredMutation<"publ
     decayRate: number;
     accessCount: number;
     lastAccessedAt: number;
-    lifecycle: "active" | "archived" | "pruned";
+    lifecycle: "archived" | "active" | "pruned";
     workspaceId: string;
 } | null>>;
 /** Every fact row for a workspace across all lifecycles — boot hydration of
@@ -122,7 +122,7 @@ export declare const listAllFacts: import("convex/server").RegisteredQuery<"publ
     _id: import("convex/values").GenericId<"memoryFacts">;
     _creationTime: number;
     metadata?: any;
-    status?: "asserted" | "provisional" | "confirmed" | "disputed" | "retracted" | undefined;
+    status?: "confirmed" | "asserted" | "provisional" | "disputed" | "retracted" | undefined;
     sourceType?: "dream" | "user_instruction" | "owner_message" | "channel_message" | "tool_output" | "retrieved_document" | "compaction" | "extraction" | undefined;
     sourceTurn?: string | undefined;
     supersedes?: string[] | undefined;
@@ -154,7 +154,7 @@ export declare const listAllFacts: import("convex/server").RegisteredQuery<"publ
     decayRate: number;
     accessCount: number;
     lastAccessedAt: number;
-    lifecycle: "active" | "archived" | "pruned";
+    lifecycle: "archived" | "active" | "pruned";
     workspaceId: string;
 }>>>;
 /** Authoritative single-record upsert — every field caller-supplied
@@ -162,7 +162,7 @@ export declare const listAllFacts: import("convex/server").RegisteredQuery<"publ
  *  realises its whole-file diffs through this. */
 export declare const upsertFactRecord: import("convex/server").RegisteredMutation<"public", {
     metadata?: any;
-    status?: "asserted" | "provisional" | "confirmed" | "disputed" | "retracted" | undefined;
+    status?: "confirmed" | "asserted" | "provisional" | "disputed" | "retracted" | undefined;
     sourceType?: "dream" | "user_instruction" | "owner_message" | "channel_message" | "tool_output" | "retrieved_document" | "compaction" | "extraction" | undefined;
     sourceTurn?: string | undefined;
     supersedes?: string[] | undefined;
@@ -194,7 +194,7 @@ export declare const upsertFactRecord: import("convex/server").RegisteredMutatio
     decayRate: number;
     accessCount: number;
     lastAccessedAt: number;
-    lifecycle: "active" | "archived" | "pruned";
+    lifecycle: "archived" | "active" | "pruned";
     workspaceId: string;
 }, Promise<void>>;
 export declare const deleteFactRecord: import("convex/server").RegisteredMutation<"public", {
@@ -202,8 +202,8 @@ export declare const deleteFactRecord: import("convex/server").RegisteredMutatio
     workspaceId: string;
 }, Promise<void>>;
 export declare const appendMemoryEvent: import("convex/server").RegisteredMutation<"public", {
-    at: number;
     kind: string;
+    at: number;
     data: string;
     workspaceId: string;
 }, Promise<void>>;
@@ -228,7 +228,7 @@ export declare const decay: import("convex/server").RegisteredMutation<"public",
     pruned: number;
 }>>;
 export declare const setLifecycle: import("convex/server").RegisteredMutation<"public", {
-    lifecycle: "active" | "archived" | "pruned";
+    lifecycle: "archived" | "active" | "pruned";
     workspaceId: string;
     memoryIds: string[];
 }, Promise<void>>;
@@ -272,7 +272,7 @@ export declare const searchContent: import("convex/server").RegisteredQuery<"pub
     _id: import("convex/values").GenericId<"memoryFacts">;
     _creationTime: number;
     metadata?: any;
-    status?: "asserted" | "provisional" | "confirmed" | "disputed" | "retracted" | undefined;
+    status?: "confirmed" | "asserted" | "provisional" | "disputed" | "retracted" | undefined;
     sourceType?: "dream" | "user_instruction" | "owner_message" | "channel_message" | "tool_output" | "retrieved_document" | "compaction" | "extraction" | undefined;
     sourceTurn?: string | undefined;
     supersedes?: string[] | undefined;
@@ -304,7 +304,7 @@ export declare const searchContent: import("convex/server").RegisteredQuery<"pub
     decayRate: number;
     accessCount: number;
     lastAccessedAt: number;
-    lifecycle: "active" | "archived" | "pruned";
+    lifecycle: "archived" | "active" | "pruned";
     workspaceId: string;
 }[]>>;
 export declare const findSimilar: import("convex/server").RegisteredQuery<"public", {
@@ -316,7 +316,7 @@ export declare const findSimilar: import("convex/server").RegisteredQuery<"publi
     _id: import("convex/values").GenericId<"memoryFacts">;
     _creationTime: number;
     metadata?: any;
-    status?: "asserted" | "provisional" | "confirmed" | "disputed" | "retracted" | undefined;
+    status?: "confirmed" | "asserted" | "provisional" | "disputed" | "retracted" | undefined;
     sourceType?: "dream" | "user_instruction" | "owner_message" | "channel_message" | "tool_output" | "retrieved_document" | "compaction" | "extraction" | undefined;
     sourceTurn?: string | undefined;
     supersedes?: string[] | undefined;
@@ -348,7 +348,7 @@ export declare const findSimilar: import("convex/server").RegisteredQuery<"publi
     decayRate: number;
     accessCount: number;
     lastAccessedAt: number;
-    lifecycle: "active" | "archived" | "pruned";
+    lifecycle: "archived" | "active" | "pruned";
     workspaceId: string;
 }[]>>;
 //# sourceMappingURL=memory.d.ts.map

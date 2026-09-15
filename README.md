@@ -99,6 +99,7 @@ backend — all under one `~/.brigade/` directory you fully own.
 - [CLI reference](#cli-reference)
 - [In-chat commands](#in-chat-commands)
 - [Built-in tools](#built-in-tools)
+- [Team Mode](#team-mode)
 - [Multi-agent isolation](#multi-agent-isolation)
 - [Providers & web search](#providers--web-search)
 - [Configuration & storage](#configuration--storage)
@@ -728,6 +729,8 @@ Every agent gets a curated toolset. Mutating/privileged tools are owner-gated
 - **Coding (pi SDK):** `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`
 - **Memory:** `recall_memory`, `read_memory`, `write_memory`, `manage_memory`
 - **Sub-agents:** `spawn_agent` (sync), `spawn_agents` (parallel fan-out)
+- **Team Mode:** `team` (owner orchestration); leased workers get only coding
+  tools plus the attempt-scoped `team_task` capability
 - **Cross-session:** `sessions_send`, `sessions_spawn`, `sessions_list`,
   `sessions_history` (gated by visibility + A2A policy)
 - **Crew management:** `agents_list`, `manage_agent`, `manage_skill`,
@@ -739,6 +742,33 @@ Every agent gets a curated toolset. Mutating/privileged tools are owner-gated
 - **Generation:** `generate_image`, `generate_video`, `generate_speech`, `generate_music`, `render_video` (HTML→MP4 motion graphics, optional engine)
 - **Documents & media:** `analyze_media` (read/understand PDF · Office · image · audio · video), `make_document` · `edit_document` (create & edit Word/Excel/PowerPoint/PDF)
 - **Channels:** `send_message`, `send_media` (when a channel is linked)
+
+---
+
+## Team Mode
+
+Team Mode adds durable rooms and multi-agent task graphs on top of Brigade's
+existing agent loop. It supports dependency joins (`all`, `any`, quorum),
+retries, leases and fencing, cancellation and timeouts, run budgets, approvals,
+handoffs, artifacts, restart recovery, and a room-scoped streaming protocol for
+UIs. A room is a durable group/channel: its public conversation supports
+threads, replies, explicit agent mentions, attachment references, search,
+reactions, pins, edits, soft deletion, reconnect history, and authoritative
+metrics. Mentions communicate but never silently launch work; delegation,
+consultation, and ownership handoff remain explicit operations. Worker attempts
+have isolated transcripts, results return durably to the room coordinator, and
+the owner can launch a validated graph with one `team.delegate` call. The same
+tool can update configured room membership or archive an idle room without
+bypassing the store's membership and active-run guards. It works in both default filesystem mode and optional
+Convex mode; it does not require Tideline or a SaaS control plane. The current
+Convex collaboration adapter is a single-owner Phase-1 scale profile whose
+retained core state must stay below its documented 16 MiB hydration boundary;
+filesystem mode does not have that Convex transaction limit.
+
+See **[docs/team-mode.md](docs/team-mode.md)** for the execution model, agent
+tools, storage guarantees, and versioned WebSocket API. Brigade ships Team Mode
+as a headless backend so products can build their own web, desktop, or mobile
+room experience without coupling UI code to the runtime package.
 
 ---
 

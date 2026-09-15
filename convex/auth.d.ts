@@ -4,9 +4,9 @@ export declare const listProfiles: import("convex/server").RegisteredQuery<"publ
 }, Promise<{
     _id: import("convex/values").GenericId<"authProfiles">;
     _creationTime: number;
+    metadata?: any;
     alias?: string | undefined;
     expires?: number | undefined;
-    metadata?: any;
     keyEnc?: ArrayBuffer | undefined;
     keyRef?: {
         id: string;
@@ -25,8 +25,8 @@ export declare const listProfiles: import("convex/server").RegisteredQuery<"publ
     profileId: string;
     agentId: string;
     provider: string;
-    ownerId: string;
     updatedAt: number;
+    ownerId: string;
 }[]>>;
 export declare const getProfile: import("convex/server").RegisteredQuery<"public", {
     profileId: string;
@@ -35,9 +35,9 @@ export declare const getProfile: import("convex/server").RegisteredQuery<"public
 }, Promise<{
     _id: import("convex/values").GenericId<"authProfiles">;
     _creationTime: number;
+    metadata?: any;
     alias?: string | undefined;
     expires?: number | undefined;
-    metadata?: any;
     keyEnc?: ArrayBuffer | undefined;
     keyRef?: {
         id: string;
@@ -56,13 +56,13 @@ export declare const getProfile: import("convex/server").RegisteredQuery<"public
     profileId: string;
     agentId: string;
     provider: string;
-    ownerId: string;
     updatedAt: number;
+    ownerId: string;
 } | null>>;
 export declare const upsertProfile: import("convex/server").RegisteredMutation<"public", {
+    metadata?: any;
     alias?: string | undefined;
     expires?: number | undefined;
-    metadata?: any;
     keyEnc?: ArrayBuffer | undefined;
     keyRef?: {
         id: string;
@@ -116,22 +116,22 @@ export declare const loadState: import("convex/server").RegisteredQuery<"public"
     isLastGood: boolean;
 }[]>>;
 export declare const readAuthFile: import("convex/server").RegisteredQuery<"public", {
-    agentId: string;
     kind: "auth-state" | "profile-state" | "models";
+    agentId: string;
     ownerId: string;
 }, Promise<{
     _id: import("convex/values").GenericId<"authFiles">;
     _creationTime: number;
+    kind: "auth-state" | "profile-state" | "models";
     agentId: string;
     payload: ArrayBuffer;
-    kind: "auth-state" | "profile-state" | "models";
-    ownerId: string;
     updatedAt: number;
+    ownerId: string;
 } | null>>;
 export declare const writeAuthFile: import("convex/server").RegisteredMutation<"public", {
+    kind: "auth-state" | "profile-state" | "models";
     agentId: string;
     payload: ArrayBuffer;
-    kind: "auth-state" | "profile-state" | "models";
     ownerId: string;
 }, Promise<{
     updated: boolean;

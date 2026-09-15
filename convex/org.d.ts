@@ -31,9 +31,9 @@ export declare const getChart: import("convex/server").RegisteredQuery<"public",
 }, Promise<{
     _id: import("convex/values").GenericId<"orgChartCache">;
     _creationTime: number;
+    mimeType: "image/png";
     transient: boolean;
     mtimeMs: number;
-    mimeType: "image/png";
     width: number;
     height: number;
     themeId: string;
@@ -61,9 +61,9 @@ export declare const listCharts: import("convex/server").RegisteredQuery<"public
 }, Promise<{
     _id: import("convex/values").GenericId<"orgChartCache">;
     _creationTime: number;
+    mimeType: "image/png";
     transient: boolean;
     mtimeMs: number;
-    mimeType: "image/png";
     width: number;
     height: number;
     themeId: string;

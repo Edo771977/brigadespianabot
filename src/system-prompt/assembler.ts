@@ -14,6 +14,7 @@ import {
   SKILLS_GUIDANCE,
   shouldUseReasoningFormat,
   SUB_AGENTS_GUIDANCE,
+  TEAM_MODE_GUIDANCE,
   TIME_GROUNDING_GUIDANCE,
   WEB_TOOLS_GUIDANCE,
 } from "./guidance.js";
@@ -79,6 +80,9 @@ export interface AssembleArgs {
   // Native-reasoning models (Claude w/ extended thinking, o1/o3) skip
   // the block regardless of level.
   thinkingLevel?: string;
+  /** Resolved model capability. Native reasoning must not be serialized as
+   * literal `<think>` text for clients to remove after the fact. */
+  modelReasoning?: boolean;
   // Capability gates for conditional guidance. `memory` is WIRED
   // (Primitive #4) — when true the assembler emits the `## Memory`
   // section. `skills` (#5) is wired too. `subAgents` (#6) advertises that
@@ -97,6 +101,9 @@ export interface AssembleArgs {
      * set is already filtered upstream to the minimal allowlist.
      */
     subagentMode?: boolean;
+    /** Durable Team task worker. Shares minimal-context gates with a
+     * sub-agent but receives an accurate Team-specific role contract. */
+    teamWorkerMode?: boolean;
     /**
      * When true, this assembled prompt is going INTO a cron-triggered run.
      * Same operator-only section gating as `subagentMode`, but uses a
@@ -228,12 +235,13 @@ function sortPersonaFiles(files: ContextFile[]): ContextFile[] {
 export function assembleSystemPrompt(args: AssembleArgs): AssembledPrompt {
   const lines: string[] = [];
   const isSubagentMode = args.capabilities?.subagentMode === true;
+  const isTeamWorkerMode = args.capabilities?.teamWorkerMode === true;
   const isCronMode = args.capabilities?.cronMode === true;
   // Both modes share the operator-only-sections-gate-off shape. The opener
   // differs (sub-agent vs cron banner); everything else collapses to one
   // "minimal mode" check so the gates below don't need to know which kind
   // triggered the minimal layout.
-  const isMinimalMode = isSubagentMode || isCronMode;
+  const isMinimalMode = isSubagentMode || isTeamWorkerMode || isCronMode;
 
   // 1. Identity opener.
   // Eight words. One brand mention. No marketing nouns. An earlier
@@ -253,7 +261,25 @@ export function assembleSystemPrompt(args: AssembleArgs): AssembledPrompt {
   // to be the parent, do NOT spawn further sub-agents) AND the behavioural
   // rules that load-bear on sub-agent quality (don't initiate, be ephemeral,
   // recover from truncated output, follow the output format).
-  if (isSubagentMode) {
+  if (isTeamWorkerMode) {
+	lines.push("# Team Task Context");
+	lines.push("");
+	lines.push("You are a TEAM WORKER running a durable assigned task inside Brigade.");
+	lines.push("");
+	lines.push(
+		"Complete only the assignment in the first user message. Your final assistant reply becomes the durable task result returned to the coordinator. The operator sees the compact result through the Team room; do not greet them or broaden the assignment.",
+	);
+	lines.push("");
+	lines.push("## Rules");
+	lines.push("1. Use `team_task({action:\"status\"})` when you need the authoritative attempt state.");
+	lines.push("2. Use `team_task({action:\"read_messages\"})` for public room context and `post_message` for concise visible updates or thread replies. A mention addresses a member but never creates work.");
+	lines.push("3. Use `team_task({action:\"delegate\"})` with a stable requestKey when 1-4 room members should do durable child work. Use kind consultation for a brief specialist answer, subtask for assigned work, or rework for a correction. This attempt yields; Brigade returns all child outcomes to a fresh attempt of this task.");
+	lines.push("4. Use `team_task({action:\"offer_handoff\"})` only to transfer ownership of this same task. Unlike delegate, an accepted handoff does not return work to you.");
+	lines.push("5. Use `team_task({action:\"request_approval\"})` for a real operator decision. The durable backplane waits for the resolution; do not claim there is no async coordination.");
+	lines.push("6. Register durable outputs with `team_task({action:\"attach_artifact\"})`. Never put credentials in metadata or URIs.");
+	lines.push("7. Finish with the concrete result, evidence, and any limitation. Do not include private reasoning or repeat the assignment envelope.");
+	lines.push("");
+  } else if (isSubagentMode) {
     lines.push("# Sub-agent Context");
     lines.push("");
     lines.push("You are a SUB-AGENT running inside Brigade.");
@@ -635,6 +661,14 @@ export function assembleSystemPrompt(args: AssembleArgs): AssembledPrompt {
   lines.push(TIME_GROUNDING_GUIDANCE);
   lines.push("");
 
+  // Team Mode awareness is tied to the real tool surface. This keeps legacy
+  // sessions byte-identical when the capability is absent and prevents a
+  // worker/minimal session from being taught coordinator behavior.
+  if (!isMinimalMode && args.toolDescriptions.some((tool) => tool.name === "team")) {
+    lines.push(TEAM_MODE_GUIDANCE);
+    lines.push("");
+  }
+
   // 8c. ## Organization (always-on awareness).
   // Tells the model that Brigade has an OPTIONAL virtual-office / org
   // layer, when to suggest enabling it, and the natural-language patterns
@@ -912,7 +946,7 @@ export function assembleSystemPrompt(args: AssembleArgs): AssembledPrompt {
   // ONLY emitted when `thinkingLevel` is on AND the model isn't a
   // native-reasoning family (Claude w/ extended thinking, o1/o3 — those
   // manage reasoning natively and adding tag rules would conflict).
-  if (shouldUseReasoningFormat(args.modelId, args.thinkingLevel)) {
+  if (shouldUseReasoningFormat(args.modelId, args.thinkingLevel, args.modelReasoning)) {
     lines.push(REASONING_FORMAT_GUIDANCE);
     lines.push("");
   }

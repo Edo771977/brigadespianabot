@@ -12,8 +12,8 @@ export declare const getCoord: import("convex/server").RegisteredQuery<"public",
     lockPort?: number | undefined;
     lockCreatedAt?: string | undefined;
     lockLeaseUntil?: number | undefined;
-    instanceId: string;
     updatedAt: number;
+    instanceId: string;
 } | null>>;
 export declare const writePid: import("convex/server").RegisteredMutation<"public", {
     pid: number;
@@ -23,8 +23,8 @@ export declare const clearPid: import("convex/server").RegisteredMutation<"publi
     instanceId: string;
 }, Promise<void>>;
 export declare const writeHeartbeat: import("convex/server").RegisteredMutation<"public", {
-    ts: number;
     pid: number;
+    ts: number;
     uptimeMs: number;
     instanceId: string;
 }, Promise<void>>;

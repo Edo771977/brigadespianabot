@@ -4,7 +4,7 @@ export declare const ping: import("convex/server").RegisteredQuery<"public", {},
     hasConfig: boolean;
     now: number;
 }>>;
-export declare const BUNDLE_VERSION = 7;
+export declare const BUNDLE_VERSION = 8;
 export declare const bundleVersion: import("convex/server").RegisteredQuery<"public", {}, Promise<number>>;
 export declare const getMeta: import("convex/server").RegisteredQuery<"public", {
     key: string;

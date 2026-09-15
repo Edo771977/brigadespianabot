@@ -45,11 +45,11 @@ export declare const readTranscript: import("convex/server").RegisteredQuery<"pu
     customType?: string | undefined;
     chunkIndex?: number | undefined;
     chunkCount?: number | undefined;
+    createdAt: number;
     type: string;
     agentId: string;
     payload: ArrayBuffer;
     sessionId: string;
-    createdAt: number;
     seq: number;
 }[]>>;
 /** Newest-first tail of (type, customType) only — for the bootstrap-delivery
@@ -72,8 +72,8 @@ export declare const inboxEnqueue: import("convex/server").RegisteredMutation<"p
     ts?: number | undefined;
     deliveryContext?: any;
     contextKey?: string | undefined;
-    sessionKey: string;
     text: ArrayBuffer;
+    sessionKey: string;
     trusted: boolean;
 }, Promise<{
     seq: number;
@@ -85,8 +85,8 @@ export declare const inboxPeek: import("convex/server").RegisteredQuery<"public"
     _creationTime: number;
     deliveryContext?: any;
     contextKey?: string | undefined;
-    sessionKey: string;
     text: ArrayBuffer;
+    sessionKey: string;
     ts: number;
     trusted: boolean;
     seq: number;
@@ -98,8 +98,8 @@ export declare const inboxDrain: import("convex/server").RegisteredMutation<"pub
     _creationTime: number;
     deliveryContext?: any;
     contextKey?: string | undefined;
-    sessionKey: string;
     text: ArrayBuffer;
+    sessionKey: string;
     ts: number;
     trusted: boolean;
     seq: number;
@@ -112,8 +112,8 @@ export declare const inboxConsumePrefix: import("convex/server").RegisteredMutat
     _creationTime: number;
     deliveryContext?: any;
     contextKey?: string | undefined;
-    sessionKey: string;
     text: ArrayBuffer;
+    sessionKey: string;
     ts: number;
     trusted: boolean;
     seq: number;

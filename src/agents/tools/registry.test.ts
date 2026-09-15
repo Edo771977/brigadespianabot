@@ -4,6 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, describe, it } from "node:test";
 
+import {
+	runWithTeamExecutionContext,
+	type ActiveTeamExecutionContext,
+} from "../../collaboration/execution-context.js";
+import { buildTeamChatSessionKey } from "../../collaboration/session-key.js";
 import { __resetRenderVideoAvailabilityCache } from "./render-video/availability.js";
 import { createBrigadeTools, listBrigadeToolNames } from "./registry.js";
 
@@ -62,7 +67,7 @@ describe("createBrigadeTools — Primitive #4 (memory) + agents_list + manage_ag
 			__resetRenderVideoAvailabilityCache();
 			fs.rmSync(stateDir, { recursive: true, force: true });
 		}
-		assert.equal(tools.length, 23);
+		assert.equal(tools.length, 24);
 		const names = tools.map((t) => t.name).sort();
 		assert.deepEqual(names, [
 			"agents_list",
@@ -86,6 +91,7 @@ describe("createBrigadeTools — Primitive #4 (memory) + agents_list + manage_ag
 			"oauth_authorize",
 			"read_memory",
 			"recall_memory",
+			"team",
 			"transcribe_audio",
 			"write_memory",
 		]);
@@ -218,6 +224,97 @@ describe("createBrigadeTools — Primitive #6 (sub-agents)", () => {
 	});
 });
 
+describe("createBrigadeTools — Team Mode", () => {
+	it("gives a Team coordinator one collaboration surface", () => {
+		const sessionKey = buildTeamChatSessionKey("room", "main");
+		const names = createBrigadeTools({
+			workspaceDir: tmpWorkspace,
+			agentId: "main",
+			cwd: tmpWorkspace,
+			senderIsOwner: true,
+			sessionContext: { key: sessionKey, agentId: "main" },
+			subagentContext: { parentSessionKey: sessionKey, callerDepth: 0 },
+		}).map((tool) => tool.name);
+		assert.ok(names.includes("team"));
+		assert.ok(names.includes("agents_list"));
+		assert.ok(!names.some((name) => name.startsWith("sessions_")));
+		assert.ok(!names.includes("spawn_agent"));
+		assert.ok(!names.includes("spawn_agents"));
+	});
+
+	it("mounts owner orchestration for a custom primary and isolates a leased worker by exact session", () => {
+		const workerOptions = {
+			workspaceDir: tmpWorkspace,
+			agentId: "worker",
+			cwd: tmpWorkspace,
+		};
+		const primary = createBrigadeTools({ ...workerOptions, agentId: "main" }).map((tool) => tool.name);
+		assert.ok(primary.includes("team"));
+		const customPrimary = createBrigadeTools({
+			...workerOptions,
+			agentId: "orchestrator",
+			senderIsOwner: true,
+		}).map((tool) => tool.name);
+		assert.ok(customPrimary.includes("team"), "an owner-routed custom primary can orchestrate Team Mode");
+		const outside = createBrigadeTools(workerOptions).map((tool) => tool.name);
+		assert.ok(!outside.includes("team"));
+		assert.ok(!outside.includes("team_task"));
+
+		const fail = async (): Promise<never> => { throw new Error("not called"); };
+		const active = {
+			identifiers: {
+				roomId: "room",
+				runId: "run",
+				taskId: "task",
+				attemptId: "attempt",
+				agentId: "worker",
+				sessionKey: "agent:worker:team:room",
+				runtimeRunId: "runtime",
+			},
+			getStatus: fail,
+				readTaskResult: fail,
+				delegateChildren: fail,
+				postMessage: fail,
+				readMessages: fail,
+				offerHandoff: fail,
+			requestApproval: fail,
+			attachArtifact: fail,
+		} satisfies ActiveTeamExecutionContext;
+		const inside = runWithTeamExecutionContext(active, () =>
+			createBrigadeTools({
+				...workerOptions,
+				senderIsOwner: false,
+				sessionContext: { key: active.identifiers.sessionKey, agentId: "worker" },
+			}).map((tool) => tool.name));
+		assert.deepEqual(inside, ["find", "team_task"]);
+
+		const inheritedChild = runWithTeamExecutionContext(active, () =>
+			createBrigadeTools({
+				...workerOptions,
+				senderIsOwner: true,
+				sessionContext: { key: `${active.identifiers.sessionKey}:subagent:child`, agentId: "worker" },
+				subagentContext: {
+					parentSessionKey: `${active.identifiers.sessionKey}:subagent:child`,
+					callerDepth: 1,
+				},
+			}).map((tool) => tool.name));
+		assert.deepEqual(
+			inheritedChild,
+			["find"],
+			"an inherited Team context is not authority for child/session/admin/delegation tools",
+		);
+		const primaryInside = runWithTeamExecutionContext(active, () =>
+			createBrigadeTools({
+				...workerOptions,
+				agentId: "main",
+				senderIsOwner: true,
+				sessionContext: { key: active.identifiers.sessionKey, agentId: "main" },
+			}).map((tool) => tool.name));
+		assert.ok(!primaryInside.includes("team"), "even primary is fence-scoped while executing a Team attempt");
+		assert.ok(!primaryInside.includes("team_task"), "the lease belongs only to the routed worker agent");
+	});
+});
+
 describe("Wave P1 — cron-triggered runs can spawn sub-agents", () => {
 	it("a cron-style turn (subagentContext + non-leaf depth) gets both spawn tools", () => {
 		// Cron's isolated executor calls runSingleTurn which always threads
@@ -324,6 +421,30 @@ describe("createBrigadeTools — consolidated `org` tool gating", () => {
 				assert.ok(names.includes("org"), "consolidated org tool surfaced when cfg.org is present");
 				assert.ok(!names.includes("org_describe"), "old org_describe no longer surfaced");
 				assert.ok(!names.includes("delegate_to_department"), "old delegate_to_department no longer surfaced");
+			},
+		);
+	});
+
+	it("keeps org delegation out of a Team coordinator chat", () => {
+		withCfg(
+			{
+				agents: {
+					defaults: { provider: "openrouter" },
+					main: { org: { department: "exec", reportsTo: null, role: "Chief of Staff" } },
+				},
+				org: { topOrder: "main", a2a: { mode: "derived" } },
+			},
+			() => {
+				const sessionKey = buildTeamChatSessionKey("room", "main");
+				const names = createBrigadeTools({
+					workspaceDir: tmpWorkspace,
+					agentId: "main",
+					cwd: tmpWorkspace,
+					senderIsOwner: true,
+					sessionContext: { key: sessionKey, agentId: "main" },
+				}).map((tool) => tool.name);
+				assert.ok(names.includes("team"));
+				assert.ok(!names.includes("org"), "Team rooms expose one agent-coordination surface");
 			},
 		);
 	});

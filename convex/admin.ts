@@ -56,6 +56,18 @@ const RESETTABLE_TABLES = [
 	"subagentRuns",
 	"gatewayCoord",
 	"brigadeBlobs",
+	"collaborationState",
+	"collaborationRooms",
+	"collaborationRuns",
+	"collaborationTasks",
+	"collaborationAttempts",
+	"collaborationHandoffs",
+	"collaborationApprovals",
+	"collaborationArtifacts",
+	"collaborationEvents",
+	"collaborationOutbox",
+	"collaborationCommandReceipts",
+	"collaborationRoomSequences",
 ] as const;
 
 export type ResettableTable = (typeof RESETTABLE_TABLES)[number];
@@ -82,6 +94,7 @@ const ACTIVITY_TABLES = [
 	"sessionInboxEvents",
 	"sessionTranscriptRecords",
 	"subagentRuns",
+	"collaborationEvents",
 ] as const;
 
 /** The list the reset client iterates — exported via query so the CLI and

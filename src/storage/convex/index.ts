@@ -1,7 +1,7 @@
 // src/storage/convex/index.ts
 //
-// ConvexBrigadeStore — all 16 sub-stores wired against the local backend's
-// 29-table schema. Some methods inside individual adapters still throw
+// ConvexBrigadeStore — all 17 sub-stores wired against the local backend's
+// normalized schema. Some methods inside individual adapters still throw
 // `NotImplementedYet` for surfaces that need follow-up work (vector
 // `findSimilar`, Convex File Storage `blobs.get/delete`, live-query
 // subscriptions) — those are documented at their call sites.
@@ -14,6 +14,7 @@
 import { ConvexAuthStore } from "./auth-store.js";
 import { ConvexBlobStore } from "./blob-store.js";
 import { ConvexChannelStore } from "./channel-store.js";
+import { ConvexCollaborationStore } from "./collaboration-store.js";
 import { ConvexConfigStore } from "./config-store.js";
 import { ConvexCronStore } from "./cron-store.js";
 import { ConvexExecApprovalStore } from "./exec-approval-store.js";
@@ -30,6 +31,7 @@ import { ConvexWorkspaceStore } from "./workspace-store.js";
 import { getConvexClient, resolveInstanceId, resolveOwnerId } from "./client.js";
 
 import { api } from "../../../convex/_generated/api.js";
+import type { CollaborationStore } from "../../collaboration/store.js";
 import type {
 	AuthStore,
 	BlobStore,
@@ -74,6 +76,7 @@ export class ConvexBrigadeStore implements BrigadeStore {
 	readonly subagents: SubagentStore;
 	readonly instance: InstanceStore;
 	readonly blobs: BlobStore;
+	readonly collaboration: CollaborationStore;
 
 	private readonly client: ReturnType<typeof getConvexClient>;
 	private readonly instanceId: string;
@@ -112,6 +115,10 @@ export class ConvexBrigadeStore implements BrigadeStore {
 			stateDir: opts.stateDir,
 		});
 		this.blobs = new ConvexBlobStore({ client: this.client, ownerId: this.ownerId });
+		this.collaboration = new ConvexCollaborationStore({
+			client: this.client,
+			ownerId: this.ownerId,
+		});
 	}
 
 	async init(): Promise<void> {

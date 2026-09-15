@@ -33,8 +33,8 @@ export declare const listJobs: import("convex/server").RegisteredQuery<"public",
     stateLastDeliveryError?: string | undefined;
     name: string;
     enabled: boolean;
-    sessionTarget: string;
     payload: ArrayBuffer;
+    sessionTarget: string;
     jobId: string;
     updatedAtMs: number;
     createdByKind: "owner" | "channel" | "legacy";
@@ -77,8 +77,8 @@ export declare const getJob: import("convex/server").RegisteredQuery<"public", {
     stateLastDeliveryError?: string | undefined;
     name: string;
     enabled: boolean;
-    sessionTarget: string;
     payload: ArrayBuffer;
+    sessionTarget: string;
     jobId: string;
     updatedAtMs: number;
     createdByKind: "owner" | "channel" | "legacy";
@@ -118,8 +118,8 @@ export declare const insertJob: import("convex/server").RegisteredMutation<"publ
     stateLastDeliveryError?: string | undefined;
     name: string;
     enabled: boolean;
-    sessionTarget: string;
     payload: ArrayBuffer;
+    sessionTarget: string;
     jobId: string;
     createdByKind: "owner" | "channel" | "legacy";
     ownerUserId: string;
@@ -162,8 +162,8 @@ export declare const patchJob: import("convex/server").RegisteredMutation<"publi
     stateLastDeliveryError?: string | undefined;
     name: string;
     enabled: boolean;
-    sessionTarget: string;
     payload: ArrayBuffer;
+    sessionTarget: string;
     jobId: string;
     updatedAtMs: number;
     createdByKind: "owner" | "channel" | "legacy";
@@ -199,8 +199,8 @@ export declare const appendRunLog: import("convex/server").RegisteredMutation<"p
     usageCacheWrite?: number | undefined;
     usageTotalTokens?: number | undefined;
     usageCostUsd?: number | undefined;
+    status: "skipped" | "error" | "ok";
     jobId: string;
-    status: "error" | "ok" | "skipped";
     ts: number;
     ownerUserId: string;
 }, Promise<void>>;
@@ -229,8 +229,8 @@ export declare const listRunLog: import("convex/server").RegisteredQuery<"public
     usageCacheWrite?: number | undefined;
     usageTotalTokens?: number | undefined;
     usageCostUsd?: number | undefined;
+    status: "skipped" | "error" | "ok";
     jobId: string;
-    status: "error" | "ok" | "skipped";
     ts: number;
     ownerUserId: string;
 }[]>>;

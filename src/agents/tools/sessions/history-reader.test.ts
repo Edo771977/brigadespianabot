@@ -24,6 +24,7 @@ delete process.env.BRIGADE_HOME;
 const { handleSessionsHistory } = await import(
 	"../../../core/server-methods/sessions.js"
 );
+const { buildTeamAttemptSessionKey } = await import("../../../collaboration/session-key.js");
 
 after(() => {
 	if (originalHome !== undefined) process.env.HOME = originalHome;
@@ -96,5 +97,19 @@ describe("sessions.history JSONL reader", () => {
 			},
 		);
 		assert.deepEqual(res.messages, []);
+	});
+
+	it("refuses private Team attempt transcripts even for trusted in-process callers", async () => {
+		let called = false;
+		await assert.rejects(
+			handleSessionsHistory(
+				{ sessionKey: buildTeamAttemptSessionKey("room", "main", "attempt") },
+				{ readMessages: async () => { called = true; return []; } },
+			),
+			(error: unknown) => error instanceof Error
+				&& error.name === "SessionsAccessForbiddenError"
+				&& /private runtime state/.test(error.message),
+		);
+		assert.equal(called, false);
 	});
 });
