@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.39.0](https://github.com/spinabot/brigade/compare/brigade-v1.38.0...brigade-v1.39.0) (2026-09-15)
+
+
+### Features
+
+* **team:** add durable collaboration mode ([88eb8ca](https://github.com/spinabot/brigade/commit/88eb8ca8e5752e4c7454855b0d4263fb95dff983))
+* **team:** add durable collaboration mode ([a53879e](https://github.com/spinabot/brigade/commit/a53879e85913729d672600d77918c1bc4b236cfb))
+
+
+### Bug Fixes
+
+* **team:** harden runtime and message pagination ([afcaca5](https://github.com/spinabot/brigade/commit/afcaca50e70c787c5cc392c29c441a1f94ae282b))
+
 ## [1.38.0](https://github.com/spinabot/brigade/compare/brigade-v1.37.1...brigade-v1.38.0) (2026-09-10)
 
 
