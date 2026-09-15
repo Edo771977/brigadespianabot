@@ -65,8 +65,11 @@ const TeamTaskParams = Type.Object({
 	threadRootMessageId: Type.Optional(
 		Type.String({ description: "read_messages: return replies under this root message.", minLength: 1, maxLength: 128 }),
 	),
+	afterMessageId: Type.Optional(
+		Type.String({ description: "read_messages: exact forward cursor; use the last message id from the previous page.", minLength: 1, maxLength: 128 }),
+	),
 	afterCreatedAt: Type.Optional(
-		Type.Integer({ description: "read_messages: return messages newer than this timestamp.", minimum: 0 }),
+		Type.Integer({ description: "read_messages: legacy coarse cursor; afterMessageId is exact when timestamps collide.", minimum: 0 }),
 	),
 	attachments: Type.Optional(
 		Type.Array(Type.Object({
@@ -351,6 +354,7 @@ export function makeTeamTaskTool(
 					}
 					case "read_messages": {
 						const threadRootMessageId = readStringParam(args, "threadRootMessageId");
+						const afterMessageId = readStringParam(args, "afterMessageId");
 						const afterCreatedAt = readNumberParam(args, "afterCreatedAt", { integer: true, strict: true });
 						const limit = readNumberParam(args, "limit", { integer: true, strict: true }) ?? 50;
 						if (afterCreatedAt !== undefined && (!Number.isSafeInteger(afterCreatedAt) || afterCreatedAt < 0)) {
@@ -361,6 +365,7 @@ export function makeTeamTaskTool(
 						}
 						const messages = await context.readMessages({
 							...(threadRootMessageId ? { threadRootMessageId } : {}),
+							...(afterMessageId ? { afterMessageId } : {}),
 							...(afterCreatedAt !== undefined ? { afterCreatedAt } : {}),
 							limit,
 						});

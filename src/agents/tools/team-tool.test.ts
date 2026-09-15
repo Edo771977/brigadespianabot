@@ -19,7 +19,7 @@ describe("team", () => {
 			store,
 			now: () => 10,
 			kick: () => { kicks += 1; },
-			validateAgentId: (agentId) => ["researcher", "writer"].includes(agentId),
+			validateAgentId: (agentId) => ["main", "researcher", "writer"].includes(agentId),
 		});
 		assert.equal(tool.ownerOnly, true);
 
@@ -210,7 +210,7 @@ describe("team", () => {
 
 	it("rejects unknown room members and configured non-member task assignees", async () => {
 		const store = new InMemoryCollaborationStore();
-		const configured = new Set(["alice", "bob"]);
+		const configured = new Set(["main", "alice", "bob"]);
 		const tool = makeTeamTool({
 			agentId: "main",
 			store,
@@ -249,11 +249,26 @@ describe("team", () => {
 		assert.equal(nonMember.ok, false);
 		assert.equal(nonMember.errorCode, "AGENT_NOT_IN_ROOM");
 		assert.deepEqual(await store.listTasks("run"), []);
+		const defaulted = details(await tool.execute("default-task", {
+			action: "add_tasks",
+			runId: "run",
+			tasks: [{ id: "coordinator-task", title: "Task", instructions: "Work" }],
+		}));
+		assert.equal(defaulted.ok, true);
+		assert.equal((await store.getTask("coordinator-task"))?.assignedAgentId, "main");
 	});
 
 	it("keeps the durable success when the best-effort worker wake fails", async () => {
 		const store = new InMemoryCollaborationStore();
-		await store.createRoom({ commandId: "seed.room", roomId: "room", title: "Room", createdBy: "main", now: 1 });
+		await store.createRoom({
+			commandId: "seed.room",
+			roomId: "room",
+			title: "Room",
+			createdBy: "main",
+			members: [{ agentId: "main", role: "coordinator" }],
+			metadata: { coordinatorAgentId: "main" },
+			now: 1,
+		});
 		await store.createRun({ commandId: "seed.run", runId: "run", roomId: "room", objective: "Run", createdBy: "main", now: 2 });
 		await store.addTasks({ commandId: "seed.tasks", runId: "run", tasks: [{ id: "task", title: "Task", instructions: "Work" }], now: 3 });
 		const tool = makeTeamTool({

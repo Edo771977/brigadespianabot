@@ -120,6 +120,11 @@ const TeamParams = Type.Object({
 	replyToMessageId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 	threadRootMessageId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 	pinnedOnly: Type.Optional(Type.Boolean()),
+	afterMessageId: Type.Optional(Type.String({
+		description: "list_messages: exact forward cursor; use the last message id from the previous page.",
+		minLength: 1,
+		maxLength: 128,
+	})),
 	afterCreatedAt: Type.Optional(Type.Integer({ minimum: 0 })),
 	runId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 	taskId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
@@ -401,16 +406,24 @@ export function makeTeamTool(
 		if (!approval) return;
 		await requireRunInScope(store, approval.runId);
 	};
-	const requireTaskAssigneesInRoom = async (
+	const prepareTaskAssigneesInRoom = async (
 		store: CollaborationStore,
-		runId: string,
+		roomId: string,
 		tasks: readonly TaskDraft[],
-	): Promise<void> => {
-		const run = await requireRunInScope(store, runId);
-		if (!run) throw new CollaborationConflictError("NOT_FOUND", `Team run not found: ${runId}`);
-		const room = await store.getRoom(run.roomId);
-		if (!room) throw new CollaborationConflictError("NOT_FOUND", `Team room not found: ${run.roomId}`);
-		const assignees = tasks.flatMap((task) => task.assignedAgentId ? [task.assignedAgentId] : []);
+	): Promise<TaskDraft[]> => {
+		const room = await store.getRoom(roomId);
+		if (!room) throw new CollaborationConflictError("NOT_FOUND", `Team room not found: ${roomId}`);
+		const coordinatorAgentId = await resolveConfiguredRoomCoordinatorAgentId(room, validateAgentId);
+		if (tasks.some((task) => !task.assignedAgentId) && !coordinatorAgentId) {
+			throw new CollaborationConflictError(
+				"NO_ROOM_COORDINATOR",
+				`Team tasks require explicit assignees because room ${room.id} has no configured coordinator`,
+			);
+		}
+		const materialized = tasks.map((task) => task.assignedAgentId
+			? { ...task }
+			: { ...task, assignedAgentId: coordinatorAgentId! });
+		const assignees = materialized.map((task) => task.assignedAgentId!);
 		await requireConfiguredAgents(assignees);
 		const members = new Set(room.members.map((member) => member.agentId));
 		const nonMember = assignees.find((agentId) => !members.has(agentId));
@@ -420,6 +433,16 @@ export function makeTeamTool(
 				`Team task assignee ${nonMember} is not a member of room ${room.id}`,
 			);
 		}
+		return materialized;
+	};
+	const prepareTaskAssigneesForRun = async (
+		store: CollaborationStore,
+		runId: string,
+		tasks: readonly TaskDraft[],
+	): Promise<TaskDraft[]> => {
+		const run = await requireRunInScope(store, runId);
+		if (!run) throw new CollaborationConflictError("NOT_FOUND", `Team run not found: ${runId}`);
+		return prepareTaskAssigneesInRoom(store, run.roomId, tasks);
 	};
 	const requireConfiguredAgents = async (agentIds: readonly string[]): Promise<void> => {
 		for (const agentId of new Set(agentIds.map((value) => value.trim()))) {
@@ -496,13 +519,11 @@ export function makeTeamTool(
 					}
 					case "create_room": {
 						const title = required(args, "title");
-						if (args.members) {
-							await requireConfiguredAgents(args.members.map((member) => member.agentId));
-						}
 						const members = [...(args.members ?? [])];
 						if (!members.some((member) => member.agentId === options.agentId)) {
 							members.unshift({ agentId: options.agentId, role: "coordinator" });
 						}
+						await requireConfiguredAgents(members.map((member) => member.agentId));
 						const created = await store.createRoom({
 							commandId,
 							now,
@@ -578,6 +599,7 @@ export function makeTeamTool(
 					case "list_messages": {
 						const roomId = scopedRoomId(args, action);
 						const threadRootMessageId = readStringParam(args, "threadRootMessageId");
+						const afterMessageId = readStringParam(args, "afterMessageId");
 						const afterCreatedAt = readNumberParam(args, "afterCreatedAt", { integer: true, strict: true });
 						const limit = readNumberParam(args, "limit", { integer: true, strict: true }) ?? 50;
 						if (afterCreatedAt !== undefined && (!Number.isSafeInteger(afterCreatedAt) || afterCreatedAt < 0)) {
@@ -589,6 +611,7 @@ export function makeTeamTool(
 						const messages = await store.listMessages({
 							roomId,
 							...(threadRootMessageId ? { threadRootMessageId } : {}),
+							...(afterMessageId ? { afterMessageId } : {}),
 							...(afterCreatedAt !== undefined ? { afterCreatedAt } : {}),
 							limit,
 						});
@@ -674,16 +697,7 @@ export function makeTeamTool(
 						if (!args.tasks || args.tasks.length === 0) {
 							throw new BrigadeToolInputError("tasks required for delegate");
 						}
-						const tasks = args.tasks as TaskDraft[];
-						const room = await store.getRoom(roomId);
-						if (!room) throw new CollaborationConflictError("NOT_FOUND", `Team room not found: ${roomId}`);
-						const assignees = tasks.flatMap((task) => task.assignedAgentId ? [task.assignedAgentId] : []);
-						await requireConfiguredAgents(assignees);
-						const members = new Set(room.members.map((member) => member.agentId));
-						const nonMember = assignees.find((agentId) => !members.has(agentId));
-						if (nonMember) {
-							throw new CollaborationConflictError("AGENT_NOT_IN_ROOM", `Team task assignee ${nonMember} is not a member of room ${roomId}`);
-						}
+						const tasks = await prepareTaskAssigneesInRoom(store, roomId, args.tasks as TaskDraft[]);
 						const delegated = await store.delegateRun({
 							commandId,
 							now,
@@ -719,8 +733,7 @@ export function makeTeamTool(
 						if (!args.tasks || args.tasks.length === 0) {
 							throw new BrigadeToolInputError("tasks required for add_tasks");
 						}
-						const tasks = args.tasks as TaskDraft[];
-						await requireTaskAssigneesInRoom(store, runId, tasks);
+						const tasks = await prepareTaskAssigneesForRun(store, runId, args.tasks as TaskDraft[]);
 						const added = await store.addTasks({ commandId, now, runId, tasks });
 						return result({
 							action,

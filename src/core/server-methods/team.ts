@@ -13,6 +13,7 @@ import {
 	MAX_TEAM_RESULT_PAGE_CHARS,
 	pageTeamTaskResult,
 } from "../../collaboration/task-result-page.js";
+import { resolveConfiguredRoomCoordinatorAgentId } from "../../collaboration/room-coordinator.js";
 import {
 	CollaborationBudgetError,
 	CollaborationConflictError,
@@ -84,6 +85,9 @@ export interface TeamMethodHandlerDeps {
 	/** Live gateway agent catalogue. Team mutations reject unknown targets
 	 * before committing durable room/task state. */
 	validateAgentId: (agentId: string) => boolean | Promise<boolean>;
+	/** Agent automatically installed as coordinator when a room is created with
+	 * no members. Production passes the gateway's primary agent. */
+	defaultAgentId?: string;
 	/** Single-operator attribution; defaults to the local owner identity. */
 	actorId?: string;
 	/** Deterministic injection point for tests; production uses UUIDs. */
@@ -153,10 +157,11 @@ function roomMetricsFromSnapshot(snapshot: CollaborationStoreSnapshot, roomId: R
 	const runIds = new Set(runs.map((run) => run.id));
 	const tasks = snapshot.tasks.filter((task) => runIds.has(task.runId));
 	const messages = (snapshot.messages ?? []).filter((message) => message.roomId === roomId && message.deletedAt === undefined);
+	const rootsWithReplies = new Set(messages.flatMap((message) => message.threadRootMessageId ? [message.threadRootMessageId] : []));
 	return {
 		messageCount: messages.length,
 		threadCount: messages.filter((message) => message.threadRootMessageId === undefined)
-			.filter((root) => messages.some((message) => message.threadRootMessageId === root.id)).length,
+			.filter((root) => rootsWithReplies.has(root.id)).length,
 		mentionCount: messages.reduce((total, message) => total + message.mentions.length, 0),
 		pinnedMessageCount: messages.filter((message) => message.pinnedAt !== undefined).length,
 		activeRuns: runs.filter((run) => run.status === "created" || run.status === "running").length,
@@ -207,6 +212,7 @@ export function mapTeamMethodError(error: unknown): unknown {
  */
 export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMethodHandlers {
 	const actorId = optionalString(deps.actorId, "actorId", MAX_ID_LENGTH) ?? "owner";
+	const defaultAgentId = optionalString(deps.defaultAgentId, "defaultAgentId", MAX_ID_LENGTH) ?? "main";
 	const makeCommandId = deps.commandIdFactory ?? randomUUID;
 
 	const commandId = (value: unknown, method: TeamRequestMethod): string =>
@@ -259,19 +265,24 @@ export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMetho
 		}
 	};
 
-	const requireTaskAssignees = async (runId: RunId, tasks: readonly TaskDraft[]): Promise<void> => {
-		const runState = await deps.store.getRun(runId);
-		if (!runState) throw notFound("run", runId);
-		await requireTaskAssigneesInRoom(runState.roomId, tasks, "team.tasks.add.tasks[].assignedAgentId");
-	};
-
-	const requireTaskAssigneesInRoom = async (
+	const prepareTaskAssigneesInRoom = async (
 		roomId: RoomId,
 		tasks: readonly TaskDraft[],
 		field: string,
-	): Promise<void> => {
+	): Promise<TaskDraft[]> => {
 		const room = await requireRoom(deps.store, roomId);
-		const assignees = tasks.flatMap((task) => task.assignedAgentId ? [task.assignedAgentId] : []);
+		const coordinatorAgentId = await resolveConfiguredRoomCoordinatorAgentId(room, deps.validateAgentId);
+		if (tasks.some((task) => !task.assignedAgentId) && !coordinatorAgentId) {
+			throw new TeamMethodError(
+				"INVALID_REQUEST",
+				`${field} requires an explicit assignee because room ${room.id} has no configured coordinator`,
+				{ field, roomId: room.id },
+			);
+		}
+		const materialized = tasks.map((task) => task.assignedAgentId
+			? { ...task }
+			: { ...task, assignedAgentId: coordinatorAgentId! });
+		const assignees = materialized.map((task) => task.assignedAgentId!);
 		await requireConfiguredAgents(assignees, field);
 		const members = new Set(room.members.map((member) => member.agentId));
 		const nonMember = assignees.find((agentId) => !members.has(agentId));
@@ -282,6 +293,13 @@ export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMetho
 				{ field, agentId: nonMember, roomId: room.id },
 			);
 		}
+		return materialized;
+	};
+
+	const prepareTaskAssignees = async (runId: RunId, tasks: readonly TaskDraft[]): Promise<TaskDraft[]> => {
+		const runState = await deps.store.getRun(runId);
+		if (!runState) throw notFound("run", runId);
+		return prepareTaskAssigneesInRoom(runState.roomId, tasks, "team.tasks.add.tasks[].assignedAgentId");
 	};
 
 	const requireMessageMentions = async (roomId: RoomId, mentions: readonly string[], field: string): Promise<void> => {
@@ -331,19 +349,29 @@ export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMetho
 					"team.rooms.create.roomId",
 					MAX_ID_LENGTH,
 				);
-				const members = p.members === undefined
-					? undefined
+				let members = p.members === undefined
+					? []
 					: parseMembers(p.members, "team.rooms.create.members");
-				const metadata = p.metadata === undefined
+				let metadata = p.metadata === undefined
 					? undefined
 					: parseMetadata(p.metadata, "team.rooms.create.metadata");
-				if (members) {
-					await requireConfiguredAgents(
-						members.map((member) => member.agentId),
-						"team.rooms.create.members[].agentId",
-					);
+				if (members.length === 0) {
+					const requestedCoordinator = metadata?.coordinatorAgentId;
+					if (requestedCoordinator !== undefined && (typeof requestedCoordinator !== "string" || requestedCoordinator.trim().length === 0)) {
+						invalid("team.rooms.create.metadata.coordinatorAgentId must be a non-empty string");
+					}
+					const coordinatorAgentId = typeof requestedCoordinator === "string"
+						? requestedCoordinator.trim()
+						: defaultAgentId;
+					await requireConfiguredAgents([coordinatorAgentId], "team.rooms.create.defaultAgentId");
+					members = [{ agentId: coordinatorAgentId, role: "coordinator" }];
+					metadata = { ...(metadata ?? {}), coordinatorAgentId };
 				}
-				await validateRoomCoordinator(metadata, members ?? [], "team.rooms.create", requireConfiguredAgents);
+				await requireConfiguredAgents(
+					members.map((member) => member.agentId),
+					"team.rooms.create.members[].agentId",
+				);
+				await validateRoomCoordinator(metadata, members, "team.rooms.create", requireConfiguredAgents);
 				const result = await deps.store.createRoom({
 					commandId: commandId(p.commandId, "team.rooms.create"),
 					...(roomId ? { roomId } : {}),
@@ -353,7 +381,7 @@ export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMetho
 						MAX_SHORT_TEXT_LENGTH,
 					),
 					createdBy: actorId,
-					...(members ? { members } : {}),
+					members,
 					...(metadata !== undefined ? { metadata } : {}),
 				});
 				return completeMutation(result);
@@ -433,7 +461,17 @@ export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMetho
 				const p = paramsObject(raw, "team.messages.list");
 				assertOnlyKeys(
 					p,
-					["roomId", "threadRootMessageId", "rootOnly", "includeDeleted", "beforeCreatedAt", "afterCreatedAt", "limit"],
+					[
+						"roomId",
+						"threadRootMessageId",
+						"rootOnly",
+						"includeDeleted",
+						"beforeMessageId",
+						"afterMessageId",
+						"beforeCreatedAt",
+						"afterCreatedAt",
+						"limit",
+					],
 					"team.messages.list",
 				);
 				const roomId = requiredId(p.roomId, "team.messages.list.roomId");
@@ -441,6 +479,8 @@ export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMetho
 				const threadRootMessageId = optionalString(p.threadRootMessageId, "team.messages.list.threadRootMessageId", MAX_ID_LENGTH);
 				const rootOnly = optionalBoolean(p.rootOnly, "team.messages.list.rootOnly");
 				const includeDeleted = optionalBoolean(p.includeDeleted, "team.messages.list.includeDeleted");
+				const beforeMessageId = optionalString(p.beforeMessageId, "team.messages.list.beforeMessageId", MAX_ID_LENGTH);
+				const afterMessageId = optionalString(p.afterMessageId, "team.messages.list.afterMessageId", MAX_ID_LENGTH);
 				const beforeCreatedAt = p.beforeCreatedAt === undefined ? undefined : nonNegativeInteger(p.beforeCreatedAt, "team.messages.list.beforeCreatedAt");
 				const afterCreatedAt = p.afterCreatedAt === undefined ? undefined : nonNegativeInteger(p.afterCreatedAt, "team.messages.list.afterCreatedAt");
 				const limit = p.limit === undefined ? undefined : positiveInteger(p.limit, "team.messages.list.limit", 500);
@@ -449,6 +489,8 @@ export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMetho
 					...(threadRootMessageId ? { threadRootMessageId } : {}),
 					...(rootOnly !== undefined ? { rootOnly } : {}),
 					...(includeDeleted !== undefined ? { includeDeleted } : {}),
+					...(beforeMessageId ? { beforeMessageId } : {}),
+					...(afterMessageId ? { afterMessageId } : {}),
 					...(beforeCreatedAt !== undefined ? { beforeCreatedAt } : {}),
 					...(afterCreatedAt !== undefined ? { afterCreatedAt } : {}),
 					...(limit !== undefined ? { limit } : {}),
@@ -619,10 +661,9 @@ export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMetho
 					"team.runs.delegate",
 				);
 				const roomId = requiredId(p.roomId, "team.runs.delegate.roomId");
-				const tasks = parseTasks(p.tasks, "team.runs.delegate.tasks", 256);
-				await requireTaskAssigneesInRoom(
+				const tasks = await prepareTaskAssigneesInRoom(
 					roomId,
-					tasks,
+					parseTasks(p.tasks, "team.runs.delegate.tasks", 256),
 					"team.runs.delegate.tasks[].assignedAgentId",
 				);
 				const result = await deps.store.delegateRun({
@@ -720,8 +761,7 @@ export function createTeamMethodHandlers(deps: TeamMethodHandlerDeps): TeamMetho
 				const p = paramsObject(raw, "team.tasks.add");
 				assertOnlyKeys(p, ["commandId", "runId", "tasks"], "team.tasks.add");
 				const runId = requiredId(p.runId, "team.tasks.add.runId");
-				const tasks = parseTasks(p.tasks);
-				await requireTaskAssignees(runId, tasks);
+				const tasks = await prepareTaskAssignees(runId, parseTasks(p.tasks));
 				const result = await deps.store.addTasks({
 					commandId: commandId(p.commandId, "team.tasks.add"),
 					runId,

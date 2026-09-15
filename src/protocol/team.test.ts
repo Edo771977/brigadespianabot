@@ -72,6 +72,7 @@ describe("Team Mode protocol discovery", () => {
 		assert.ok(TEAM_PROTOCOL_CAPABILITIES.includes("team.tasks.result.page"));
 		assert.ok(TEAM_PROTOCOL_CAPABILITIES.includes("team.review-policy.independent-v1"));
 		assert.ok(TEAM_PROTOCOL_CAPABILITIES.includes("team.messages.threads.v1"));
+		assert.ok(TEAM_PROTOCOL_CAPABILITIES.includes("team.messages.cursor.v1"));
 		assert.ok(TEAM_PROTOCOL_CAPABILITIES.includes("team.rooms.metrics.v1"));
 	});
 });

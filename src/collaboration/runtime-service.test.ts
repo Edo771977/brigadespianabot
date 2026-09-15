@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import test from "node:test";
 import { requireActiveTeamExecutionContext } from "./execution-context.js";
 import { InMemoryCollaborationStore } from "./memory-store.js";
@@ -32,6 +33,7 @@ async function addRun(
 		const members = new Set(
 			options.tasks.flatMap((task) => task.agentId ? [task.agentId] : []),
 		);
+		if (options.tasks.some((task) => !task.agentId)) members.add("main");
 		// Handoff-focused fixtures use bob as the successor even when the
 		// initial task is assigned only to alice.
 		members.add("bob");
@@ -330,6 +332,51 @@ test("an exact authority claim cannot redirect an assigned plan to a higher-prio
 	await service.stop();
 });
 
+test("runtime terminalizes legacy tasks whose fallback agent is not a room member", async () => {
+	const store = new InMemoryCollaborationStore();
+	await store.createRoom({
+		commandId: "room",
+		roomId: "room",
+		title: "Room",
+		createdBy: "owner",
+		members: [{ agentId: "alice" }],
+		now: 1,
+	});
+	await store.createRun({
+		commandId: "run",
+		runId: "run",
+		roomId: "room",
+		objective: "Legacy work",
+		createdBy: "owner",
+		now: 2,
+	});
+	await store.addTasks({
+		commandId: "tasks",
+		runId: "run",
+		tasks: [{ id: "task", title: "Task", instructions: "Work" }],
+		now: 3,
+	});
+	await store.startRun({ commandId: "start", runId: "run", now: 4 });
+	let turns = 0;
+	const service = new TeamRuntimeService({
+		store,
+		workerId: "runtime",
+		defaultAgentId: "main",
+		validateAgentId: () => true,
+		idlePollMs: 10_000,
+		runTurn: async () => {
+			turns += 1;
+			return { reply: "must not run" };
+		},
+	});
+	await service.start();
+	await service.waitForQuiescence();
+	assert.equal(turns, 0);
+	assert.equal((await store.getTask("task"))?.status, "failed");
+	assert.match((await store.listAttempts("task"))[0]?.errorMessage ?? "", /not a member/);
+	await service.stop();
+});
+
 test("one agent is not scheduled concurrently across different Team rooms", async () => {
 	const store = new InMemoryCollaborationStore();
 	await addRun(store, {
@@ -597,6 +644,54 @@ test("approval waits pause the execution timeout and approved work resumes to co
 	await service.waitForQuiescence();
 	assert.equal((await store.getTask("task"))?.status, "succeeded");
 	assert.equal((await store.getTask("task"))?.result, "approved result");
+	await service.stop();
+});
+
+test("approval polling removes abort listeners after every timed poll", async () => {
+	const store = new InMemoryCollaborationStore();
+	await addRun(store, { roomId: "room", runId: "run", tasks: [{ id: "task", agentId: "alice" }] });
+	let signal: AbortSignal | undefined;
+	const service = new TeamRuntimeService({
+		store,
+		workerId: "runtime",
+		validateAgentId: () => true,
+		leaseDurationMs: 1_000,
+		leaseRenewIntervalMs: 100,
+		idlePollMs: 1,
+		runTurn: async (request) => {
+			signal = request.signal;
+			const attempt = (await store.listAttempts("task"))[0]!;
+			await store.requestApproval({
+				commandId: "approval.request",
+				approvalId: "approval",
+				attemptId: attempt.id,
+				leaseToken: attempt.lease.token,
+				fence: attempt.lease.fence,
+				kind: "deploy",
+				prompt: "Proceed?",
+				requestedBy: "alice",
+				now: Date.now(),
+			});
+			return { reply: "approved result" };
+		},
+	});
+	await service.start();
+	await waitFor(async () => (await store.getTask("task"))?.status === "waiting_approval");
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	assert.ok(signal);
+	assert.ok(
+		getEventListeners(signal, "abort").length <= 2,
+		"timed polling must not retain one abort listener per interval",
+	);
+	await store.resolveApproval({
+		commandId: "approval.resolve",
+		approvalId: "approval",
+		decision: "approved",
+		now: Date.now(),
+	});
+	await service.kick();
+	await service.waitForQuiescence();
+	assert.equal((await store.getTask("task"))?.status, "succeeded");
 	await service.stop();
 });
 

@@ -92,6 +92,7 @@ export interface PostTeamMessageInput {
 
 export interface ReadTeamMessagesInput {
 	threadRootMessageId?: string;
+	afterMessageId?: string;
 	afterCreatedAt?: number;
 	limit?: number;
 }
@@ -345,6 +346,7 @@ export function createActiveTeamExecutionContext(
 			return options.store.listMessages({
 				roomId: ids.roomId,
 				...(input.threadRootMessageId ? { threadRootMessageId: input.threadRootMessageId } : {}),
+				...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
 				...(input.afterCreatedAt !== undefined ? { afterCreatedAt: input.afterCreatedAt } : {}),
 				...(input.limit !== undefined ? { limit: input.limit } : {}),
 			});

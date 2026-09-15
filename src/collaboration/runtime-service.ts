@@ -201,6 +201,25 @@ function makeAbortError(message: string): Error {
 	return error;
 }
 
+function waitForAbortOrDelay(signal: AbortSignal, delayMs: number): Promise<void> {
+	if (signal.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		let settled = false;
+		const finish = (): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			signal.removeEventListener("abort", finish);
+			resolve();
+		};
+		const timer = setTimeout(finish, delayMs);
+		signal.addEventListener("abort", finish, { once: true });
+		// AbortSignal does not replay an abort that happens immediately before a
+		// listener is attached. Close that narrow race explicitly.
+		if (signal.aborted) finish();
+	});
+}
+
 const LIVE_RUNTIME_ATTEMPT_STATUSES = new Set<TaskAttempt["status"]>([
 	"running",
 	"waiting_approval",
@@ -388,9 +407,7 @@ export class TeamRuntimeService {
 			this.startupReconciled = true;
 			snapshot = await this.store.readSnapshot();
 		}
-		if (await this.settleOrphanDecisions(snapshot)) {
-			snapshot = await this.store.readSnapshot();
-		}
+		await this.settleOrphanDecisions(snapshot);
 		await this.syncDurableCancellations();
 
 		while (!this.stopped && this.active.size < this.globalConcurrency) {
@@ -503,9 +520,8 @@ export class TeamRuntimeService {
 	 * lease expiry, or a previous-process crash. The current store contract has
 	 * no separate system-cancel command, so a system rejection is the only
 	 * terminal transition that is atomic and adapter-portable. */
-	private async settleOrphanDecisions(snapshot: CollaborationStoreSnapshot): Promise<boolean> {
+	private async settleOrphanDecisions(snapshot: CollaborationStoreSnapshot): Promise<void> {
 		const attempts = new Map(snapshot.attempts.map((attempt) => [attempt.id, attempt]));
-		let changed = false;
 		for (const handoff of snapshot.handoffs) {
 			const source = attempts.get(handoff.fromAttemptId);
 			if (handoff.status !== "offered" || !source || LIVE_RUNTIME_ATTEMPT_STATUSES.has(source.status)) continue;
@@ -517,7 +533,6 @@ export class TeamRuntimeService {
 					respondingAgentId: handoff.toAgentId,
 					reason: `source attempt ${source.status}`,
 				});
-				changed = true;
 			} catch (error) {
 				if (!decisionAlreadySettled(error)) throw error;
 			}
@@ -533,12 +548,10 @@ export class TeamRuntimeService {
 					decision: "rejected",
 					resolution: `source attempt ${source.status}`,
 				});
-				changed = true;
 			} catch (error) {
 				if (!decisionAlreadySettled(error)) throw error;
 			}
 		}
-		return changed;
 	}
 
 	private launch(
@@ -592,6 +605,12 @@ export class TeamRuntimeService {
 		const agentId = active.attempt.agentId ?? this.resolveAgent(task, run);
 		if (!(await this.validateAgent(agentId))) {
 			throw new CollaborationConflictError("UNKNOWN_AGENT", `Team task is assigned to unknown agent: ${agentId}`);
+		}
+		if (!snapshot.room.members.some((member) => member.agentId === agentId)) {
+			throw new CollaborationConflictError(
+				"AGENT_NOT_IN_ROOM",
+				`Team task agent ${agentId} is not a member of room ${snapshot.room.id}`,
+			);
 		}
 		const sessionKey = buildTeamAttemptSessionKey(run.roomId, agentId, active.attempt.id);
 		const reservationKey = teamAgentReservationKey(agentId);
@@ -870,16 +889,7 @@ export class TeamRuntimeService {
 	}
 
 	private async waitForSessionRelease(signal: AbortSignal): Promise<void> {
-		if (signal.aborted) return;
-		await new Promise<void>((resolve) => {
-			const finish = (): void => {
-				clearTimeout(timer);
-				signal.removeEventListener("abort", finish);
-				resolve();
-			};
-			const timer = setTimeout(finish, Math.min(100, this.idlePollMs));
-			signal.addEventListener("abort", finish, { once: true });
-		});
+		await waitForAbortOrDelay(signal, Math.min(100, this.idlePollMs));
 	}
 
 	private async recordTerminalUsage(
@@ -937,10 +947,7 @@ export class TeamRuntimeService {
 						deadline?.pause();
 						active.paused = true;
 					}
-					await Promise.race([
-						new Promise<void>((resolve) => setTimeout(resolve, Math.min(250, this.idlePollMs))),
-						new Promise<void>((resolve) => active.controller.signal.addEventListener("abort", () => resolve(), { once: true })),
-					]);
+					await waitForAbortOrDelay(active.controller.signal, Math.min(250, this.idlePollMs));
 					if (active.controller.signal.aborted) return undefined;
 				}
 			}

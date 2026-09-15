@@ -263,8 +263,11 @@ appear in the operator conversation; UIs receive only the redacted Team lanes.
 After reconnecting, call `team.resume` with the last rendered `roomSeq`. The
 response contains the current room/run snapshot, authoritative metrics, the 100
 most recent public messages, and newer durable events. Page older conversation
-with `team.messages.list`; use `team.messages.search` for bounded server-side
-search. If `replayComplete` is false, render the returned snapshot as authority
+with `team.messages.list`. Prefer `beforeMessageId`/`afterMessageId` over the
+legacy timestamp cursors so messages created in the same millisecond cannot be
+skipped; the cursor must name a message in the same room. Use
+`team.messages.search` for bounded server-side search. If `replayComplete` is
+false, render the returned snapshot as authority
 instead of trying to reconstruct state from an incomplete event interval.
 
 For UI state, key transient streams by `attemptId`, render durable task state

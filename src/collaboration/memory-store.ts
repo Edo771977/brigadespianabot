@@ -1208,6 +1208,9 @@ export class InMemoryCollaborationStore implements CollaborationStore {
 		if (run.status !== "created") {
 			throw new CollaborationConflictError("INVALID_RUN_STATE", `run is ${run.status}`);
 		}
+		if (![...this.tasks.values()].some((task) => task.runId === run.id)) {
+			throw new CollaborationConflictError("RUN_HAS_NO_TASKS", "cannot start a Team run without tasks");
+		}
 		this.assertIndependentReviewPolicies(run.id);
 		run.status = "running";
 		run.startedAt = at;
@@ -2495,16 +2498,33 @@ export class InMemoryCollaborationStore implements CollaborationStore {
 			if (query.rootOnly && query.threadRootMessageId) {
 				throw new CollaborationConflictError("INVALID_ARGUMENT", "rootOnly and threadRootMessageId are mutually exclusive");
 			}
+			if (query.beforeMessageId && query.beforeCreatedAt !== undefined) {
+				throw new CollaborationConflictError("INVALID_ARGUMENT", "beforeMessageId and beforeCreatedAt are mutually exclusive");
+			}
+			if (query.afterMessageId && query.afterCreatedAt !== undefined) {
+				throw new CollaborationConflictError("INVALID_ARGUMENT", "afterMessageId and afterCreatedAt are mutually exclusive");
+			}
+			const beforeMessage = query.beforeMessageId ? this.messageOrThrow(query.beforeMessageId) : undefined;
+			const afterMessage = query.afterMessageId ? this.messageOrThrow(query.afterMessageId) : undefined;
+			for (const cursor of [beforeMessage, afterMessage]) {
+				if (cursor && cursor.roomId !== query.roomId) {
+					throw new CollaborationConflictError("MESSAGE_SCOPE_MISMATCH", "message cursor belongs to another room");
+				}
+			}
 			const limit = Math.max(1, Math.min(query.limit ?? 100, 500));
 			const values = [...this.messages.values()]
 				.filter((message) => message.roomId === query.roomId)
 				.filter((message) => query.includeDeleted === true || message.deletedAt === undefined)
 				.filter((message) => query.threadRootMessageId === undefined || message.threadRootMessageId === query.threadRootMessageId)
 				.filter((message) => query.rootOnly !== true || message.threadRootMessageId === undefined)
+				.filter((message) => beforeMessage === undefined || compareCreated(message, beforeMessage) < 0)
+				.filter((message) => afterMessage === undefined || compareCreated(message, afterMessage) > 0)
 				.filter((message) => query.beforeCreatedAt === undefined || message.createdAt < query.beforeCreatedAt)
 				.filter((message) => query.afterCreatedAt === undefined || message.createdAt > query.afterCreatedAt)
 				.sort(compareCreated);
-			return query.afterCreatedAt !== undefined ? values.slice(0, limit) : values.slice(-limit);
+			return query.afterMessageId !== undefined || query.afterCreatedAt !== undefined
+				? values.slice(0, limit)
+				: values.slice(-limit);
 		});
 	}
 
@@ -2532,10 +2552,11 @@ export class InMemoryCollaborationStore implements CollaborationStore {
 			const runIds = new Set(runs.map((run) => run.id));
 			const tasks = [...this.tasks.values()].filter((task) => runIds.has(task.runId));
 			const messages = [...this.messages.values()].filter((message) => message.roomId === roomId && message.deletedAt === undefined);
+			const rootsWithReplies = new Set(messages.flatMap((message) => message.threadRootMessageId ? [message.threadRootMessageId] : []));
 			return {
 				messageCount: messages.length,
 				threadCount: messages.filter((message) => message.threadRootMessageId === undefined)
-					.filter((root) => messages.some((message) => message.threadRootMessageId === root.id)).length,
+					.filter((root) => rootsWithReplies.has(root.id)).length,
 				mentionCount: messages.reduce((total, message) => total + message.mentions.length, 0),
 				pinnedMessageCount: messages.filter((message) => message.pinnedAt !== undefined).length,
 				activeRuns: runs.filter((run) => run.status === "created" || run.status === "running").length,

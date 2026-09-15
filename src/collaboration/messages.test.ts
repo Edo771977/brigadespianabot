@@ -137,6 +137,40 @@ describe("Team room messages", () => {
 		assert.equal((await store.listMessages({ roomId: "room-1" })).length, 1);
 	});
 
+	it("paginates exactly by message id when several messages share one timestamp", async () => {
+		const store = await roomStore();
+		for (const id of ["message-a", "message-b", "message-c"]) {
+			await store.postMessage({
+				commandId: `post:${id}`,
+				messageId: id,
+				roomId: "room-1",
+				authorId: "owner",
+				authorKind: "owner",
+				content: id,
+				now: 10,
+			});
+		}
+
+		const latest = await store.listMessages({ roomId: "room-1", limit: 2 });
+		assert.deepEqual(latest.map((message) => message.id), ["message-b", "message-c"]);
+		assert.deepEqual(
+			(await store.listMessages({ roomId: "room-1", beforeMessageId: latest[0]!.id, limit: 2 }))
+				.map((message) => message.id),
+			["message-a"],
+		);
+		const second = await store.listMessages({ roomId: "room-1", afterMessageId: "message-a", limit: 1 });
+		assert.deepEqual(second.map((message) => message.id), ["message-b"]);
+		assert.deepEqual(
+			(await store.listMessages({ roomId: "room-1", afterMessageId: second[0]!.id, limit: 1 }))
+				.map((message) => message.id),
+			["message-c"],
+		);
+		await assert.rejects(
+			store.listMessages({ roomId: "room-1", afterMessageId: "message-a", afterCreatedAt: 10 }),
+			(error: unknown) => (error as { code?: string }).code === "INVALID_ARGUMENT",
+		);
+	});
+
 	it("soft-deletes content while retaining a thread tombstone", async () => {
 		const store = await roomStore();
 		await store.postMessage({

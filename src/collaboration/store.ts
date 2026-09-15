@@ -328,6 +328,8 @@ export interface MessageQuery {
 	threadRootMessageId?: MessageId;
 	rootOnly?: boolean;
 	includeDeleted?: boolean;
+	beforeMessageId?: MessageId;
+	afterMessageId?: MessageId;
 	beforeCreatedAt?: number;
 	afterCreatedAt?: number;
 	limit?: number;

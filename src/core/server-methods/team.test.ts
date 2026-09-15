@@ -83,13 +83,19 @@ describe("createTeamMethodHandlers", () => {
 			roomId: "room-1",
 			objective: "Ship it",
 		});
+		await handlers["team.tasks.add"]({
+			commandId: "tasks-command",
+			runId: "run-1",
+			tasks: [{ id: "task-1", title: "Ship", instructions: "Ship it", assignedAgentId: "analyst" }],
+		});
+		const kicksBeforeStart = kickCount;
 		const first = await handlers["team.runs.start"]({ commandId: "start-command", runId: "run-1" });
 		const replay = await handlers["team.runs.start"]({ commandId: "start-command", runId: "run-1" });
 
 		assert.equal(first.replayed, false);
 		assert.equal(replay.replayed, true);
-		assert.equal(publishCount, 3, "room create, run create, and first run start publish");
-		assert.equal(kickCount, 1, "only the first run start wakes the coordinator");
+		assert.equal(publishCount, 4, "room create, run create, task add, and first run start publish");
+		assert.equal(kickCount, kicksBeforeStart + 1, "only the first run start wakes the coordinator");
 	});
 
 	it("atomically delegates a complete reviewer DAG and never leaves a partial run", async () => {
@@ -330,6 +336,12 @@ describe("createTeamMethodHandlers", () => {
 				error.details?.roomId === "room",
 		);
 		assert.deepEqual(await store.listTasks("run"), []);
+		const assigned = await handlers["team.tasks.add"]({
+			commandId: "default-to-coordinator",
+			runId: "run",
+			tasks: [{ id: "coordinator-task", title: "Task", instructions: "Work" }],
+		});
+		assert.equal(assigned.value[0]?.assignedAgentId, "alice");
 
 		await assert.rejects(
 			handlers["team.rooms.update"]({
@@ -695,6 +707,28 @@ describe("createTeamMethodHandlers", () => {
 			roomId: "room-1",
 			threadRootMessageId: root.value.id,
 		})).messages.map((message) => message.id), ["message-reply"]);
+		const sharedTimestamp = Date.now() + 1_000;
+		for (const messageId of ["cursor-a", "cursor-b", "cursor-c"]) {
+			await store.postMessage({
+				commandId: `cursor:${messageId}`,
+				messageId,
+				roomId: "room-1",
+				authorId: "operator",
+				authorKind: "owner",
+				content: messageId,
+				now: sharedTimestamp,
+			});
+		}
+		assert.deepEqual((await handlers["team.messages.list"]({
+			roomId: "room-1",
+			afterMessageId: "cursor-a",
+			limit: 1,
+		})).messages.map((message) => message.id), ["cursor-b"]);
+		assert.deepEqual((await handlers["team.messages.list"]({
+			roomId: "room-1",
+			beforeMessageId: "cursor-c",
+			limit: 1,
+		})).messages.map((message) => message.id), ["cursor-b"]);
 		const searched = await handlers["team.messages.search"]({
 			roomId: "room-1",
 			query: "release plan",
@@ -706,13 +740,19 @@ describe("createTeamMethodHandlers", () => {
 		assert.equal(searched.messages[0]?.pinnedBy, "operator");
 
 		const metrics = await handlers["team.rooms.metrics"]({ roomId: "room-1" });
-		assert.equal(metrics.messageCount, 2);
+		assert.equal(metrics.messageCount, 5);
 		assert.equal(metrics.threadCount, 1);
 		assert.equal(metrics.mentionCount, 1);
 		assert.equal(metrics.pinnedMessageCount, 1);
 
 		const resumed = await handlers["team.resume"]({ roomId: "room-1", afterRoomSeq: 0 });
-		assert.deepEqual(resumed.messages.map((message) => message.id).sort(), ["message-reply", "message-root"]);
+		assert.deepEqual(resumed.messages.map((message) => message.id).sort(), [
+			"cursor-a",
+			"cursor-b",
+			"cursor-c",
+			"message-reply",
+			"message-root",
+		]);
 		assert.deepEqual(resumed.metrics, metrics);
 		assert.ok(published.includes("message.posted"));
 		assert.ok(published.includes("message.reacted"));

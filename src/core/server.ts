@@ -5981,6 +5981,7 @@ async function continueBoot(args: BootContinueArgs): Promise<ServerHandle> {
 	const teamHandlers = createTeamMethodHandlers({
 		store: runtimeContext.store.collaboration,
 		validateAgentId: (requested) => perAgentRuntime.has(requested),
+		defaultAgentId: agentId,
 		actorId: "owner",
 		kickCoordinator: () => teamRuntime.kick(),
 		listPendingExecApprovals: (roomId) => approvalBridge

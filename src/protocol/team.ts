@@ -116,6 +116,8 @@ export const TEAM_PROTOCOL_CAPABILITIES = [
 	"team.review-policy.independent-v1",
 	/** Rooms expose durable messages, replies, threads, mentions, pins, and reactions. */
 	"team.messages.threads.v1",
+	/** Message-id cursors preserve exact pagination when timestamps collide. */
+	"team.messages.cursor.v1",
 	/** Room metrics are authoritative projections over durable collaboration state. */
 	"team.rooms.metrics.v1",
 ] as const;
@@ -304,6 +306,8 @@ export interface TeamRequestParams {
 		threadRootMessageId?: MessageId;
 		rootOnly?: boolean;
 		includeDeleted?: boolean;
+		beforeMessageId?: MessageId;
+		afterMessageId?: MessageId;
 		beforeCreatedAt?: number;
 		afterCreatedAt?: number;
 		limit?: number;

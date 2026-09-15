@@ -61,6 +61,32 @@ async function succeed(store: InMemoryCollaborationStore, attempt: Awaited<Retur
 	});
 }
 
+test("starting an empty run fails atomically instead of leaving an immortal running run", async () => {
+	const store = new InMemoryCollaborationStore();
+	await store.createRoom({
+		commandId: "empty.room",
+		roomId: "room",
+		title: "Empty run guard",
+		createdBy: "owner",
+		now: 1,
+	});
+	await store.createRun({
+		commandId: "empty.run",
+		runId: "run",
+		roomId: "room",
+		objective: "Must have executable work",
+		createdBy: "owner",
+		now: 2,
+	});
+	const before = await store.readSnapshot();
+	await assert.rejects(
+		store.startRun({ commandId: "empty.start", runId: "run", now: 3 }),
+		(error: unknown) => error instanceof CollaborationConflictError && error.code === "RUN_HAS_NO_TASKS",
+	);
+	assert.deepEqual(await store.readSnapshot(), before);
+	assert.equal((await store.getRun("run"))?.status, "created");
+});
+
 test("review verdict gates fail closed in the durable authority", async () => {
 	const store = await startedStore([{
 		id: "final-review",
