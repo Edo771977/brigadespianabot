@@ -1,17 +1,17 @@
 export declare const listAccess: import("convex/server").RegisteredQuery<"public", {
-    accountId: string;
     kind: "allow-from" | "group-allow-from" | "pairing";
+    accountId: string;
     channelId: string;
     ownerId: string;
 }, Promise<{
     _id: import("convex/values").GenericId<"channelAccess">;
     _creationTime: number;
+    createdAt?: number | undefined;
     code?: ArrayBuffer | undefined;
     senderName?: string | undefined;
-    createdAt?: number | undefined;
     lastSeenAt?: number | undefined;
-    accountId: string;
     kind: "allow-from" | "group-allow-from" | "pairing";
+    accountId: string;
     channelId: string;
     senderId: ArrayBuffer;
     ownerId: string;
@@ -24,12 +24,12 @@ export declare const listAllAccess: import("convex/server").RegisteredQuery<"pub
 }, Promise<{
     _id: import("convex/values").GenericId<"channelAccess">;
     _creationTime: number;
+    createdAt?: number | undefined;
     code?: ArrayBuffer | undefined;
     senderName?: string | undefined;
-    createdAt?: number | undefined;
     lastSeenAt?: number | undefined;
-    accountId: string;
     kind: "allow-from" | "group-allow-from" | "pairing";
+    accountId: string;
     channelId: string;
     senderId: ArrayBuffer;
     ownerId: string;
@@ -39,8 +39,8 @@ export declare const listAllAccess: import("convex/server").RegisteredQuery<"pub
  *  whole-file atomic write. Caller-supplied codes/timestamps are
  *  authoritative so locally-generated pairing codes survive verbatim. */
 export declare const reconcileAccess: import("convex/server").RegisteredMutation<"public", {
-    accountId: string;
     kind: "allow-from" | "group-allow-from" | "pairing";
+    accountId: string;
     channelId: string;
     ownerId: string;
     rows: {
@@ -56,8 +56,8 @@ export declare const reconcileAccess: import("convex/server").RegisteredMutation
 export declare const upsertAccess: import("convex/server").RegisteredMutation<"public", {
     code?: ArrayBuffer | undefined;
     senderName?: string | undefined;
-    accountId: string;
     kind: "allow-from" | "group-allow-from" | "pairing";
+    accountId: string;
     channelId: string;
     senderId: ArrayBuffer;
     ownerId: string;
@@ -65,8 +65,8 @@ export declare const upsertAccess: import("convex/server").RegisteredMutation<"p
     changed: boolean;
 }>>;
 export declare const removeAccess: import("convex/server").RegisteredMutation<"public", {
-    accountId: string;
     kind: "allow-from" | "group-allow-from" | "pairing";
+    accountId: string;
     channelId: string;
     senderId: ArrayBuffer;
     ownerId: string;
@@ -105,11 +105,11 @@ export declare const revokePairing: import("convex/server").RegisteredMutation<"
 export declare const generateMediaUploadUrl: import("convex/server").RegisteredMutation<"public", {}, Promise<string>>;
 export declare const recordMediaBlob: import("convex/server").RegisteredMutation<"public", {
     fileName?: string | undefined;
-    accountId: string;
-    channelId: string;
-    messageId: string;
     mimeType: string;
     bytes: number;
+    accountId: string;
+    messageId: string;
+    channelId: string;
     index: number;
     ownerId: string;
     storageId: import("convex/values").GenericId<"_storage">;
@@ -118,8 +118,8 @@ export declare const recordMediaBlob: import("convex/server").RegisteredMutation
 }>>;
 export declare const getMediaBlobUrl: import("convex/server").RegisteredQuery<"public", {
     accountId: string;
-    channelId: string;
     messageId: string;
+    channelId: string;
     index: number;
     ownerId: string;
 }, Promise<{
@@ -141,8 +141,8 @@ export declare const readAuthFile: import("convex/server").RegisteredQuery<"publ
     _id: import("convex/values").GenericId<"whatsappAuthFile">;
     _creationTime: number;
     accountId: string;
-    ownerId: string;
     updatedAt: number;
+    ownerId: string;
     fileKey: string;
     contentB64: ArrayBuffer;
     contentVersion: number;

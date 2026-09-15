@@ -48,6 +48,51 @@ import type { AnyBrigadeTool } from "./tools/types.js";
  */
 const BUILTIN_TOOL_NAMES = ["read", "write", "edit", "bash", "grep", "ls"] as const;
 
+/**
+ * Complete model-visible capability set for one leased Team attempt.
+ *
+ * Keep this explicit and narrow: Team workers may operate on the checked-out
+ * workspace and communicate through their fence-bound `team_task` capability,
+ * but must not inherit owner configuration, secrets, memory, session routing,
+ * or sub-agent delegation tools from a normal interactive turn.
+ */
+export const TEAM_ATTEMPT_TOOL_ALLOWLIST = [
+	"read",
+	"write",
+	"edit",
+	"bash",
+	"grep",
+	"ls",
+	"find",
+	// Research is a first-class Team role. These are read-only, centrally
+	// wrapped as untrusted external content, and still depend on the operator's
+	// configured providers. Interactive browser control stays excluded.
+	"fetch_url",
+	"web_search",
+	"team_task",
+] as const;
+
+/** Build a fresh turn policy so callers cannot mutate the shared allowlist. */
+export function makeTeamAttemptTurnSecurity(): {
+	senderIsOwner: false;
+	teamMode: true;
+	toolsAllow: string[];
+} {
+	return {
+		senderIsOwner: false,
+		teamMode: true,
+		toolsAllow: [...TEAM_ATTEMPT_TOOL_ALLOWLIST],
+	};
+}
+
+/** Shared allowlist predicate for native, extension, and late-bound web tools. */
+export function executionAllowsTool(
+	toolName: string,
+	toolsAllow: readonly string[] | undefined,
+): boolean {
+	return toolsAllow === undefined || toolsAllow.includes(toolName);
+}
+
 export interface BrigadeToolset {
 	/** Pi built-in tool names (passed to Pi's `tools` allowlist). */
 	builtinToolNames: string[];
@@ -140,7 +185,8 @@ export function assembleBrigadeToolset(opts: {
 		parentModelId?: string;
 	};
 	/**
-	 * Cron-mode tool allowlist. When set, the resulting toolset (built-ins
+	 * Execution-scoped tool allowlist (used by cron and Team attempts). When
+	 * set, the resulting toolset (built-ins
 	 * AND brigade custom tools) is filtered down to ONLY these names.
 	 * Stacks AFTER the `senderIsOwner` ownerOnly filter — both layers
 	 * compose, with allowlist applied last. Empty array means "no tools";
@@ -204,6 +250,10 @@ export function assembleBrigadeToolset(opts: {
 		modelId?: string;
 		imageInput?: boolean;
 	};
+	/** Live Team-agent availability supplied by the gateway runtime. */
+	teamAgentIsRunnable?: (agentId: string) => boolean | Promise<boolean>;
+	/** Restrict the Team tool to inspection for synthetic coordinator returns. */
+	teamToolReadOnly?: boolean;
 }): BrigadeToolset {
 	const senderIsOwner = opts.senderIsOwner ?? true;
 	const rawCustomTools = createBrigadeTools({
@@ -225,6 +275,10 @@ export function assembleBrigadeToolset(opts: {
 			? { sessionToolAccess: opts.sessionToolAccess }
 			: {}),
 		...(opts.modelContext !== undefined ? { modelContext: opts.modelContext } : {}),
+		...(opts.teamAgentIsRunnable !== undefined
+			? { teamAgentIsRunnable: opts.teamAgentIsRunnable }
+			: {}),
+		...(opts.teamToolReadOnly === true ? { teamToolReadOnly: true } : {}),
 	});
 	// Wrap every tool — `wrapOwnerOnlyToolExecution` is a no-op for the owner
 	// AND for non-ownerOnly tools, so the cost is one identity-check per tool.
@@ -289,6 +343,16 @@ export function assembleBrigadeToolset(opts: {
 		if (t.name === "oauth_authorize") {
 			return wrapToolExecutionTimeout(ownerWrapped, undefined, resolveOAuthAuthorizeTimeoutMs);
 		}
+		// team_task approval and handoff calls intentionally remain pending until
+		// a durable decision arrives. Their lifetime is owned by the active Team
+		// execution context: run/task cancellation, lease loss, runtime shutdown,
+		// and the optional attempt timeout all abort the same signal while the
+		// coordinator continues renewing the lease. The generic 60s watchdog does
+		// not abort its orphaned promise, so applying it here would let the model
+		// continue while a hidden approval/handoff wait was still alive.
+		if (t.name === "team_task") {
+			return ownerWrapped;
+		}
 		// render_video runs lint (≤60s) THEN render (≤600s overall watchdog) + a 5s
 		// kill-settle each + doctor/fs overhead — sequential, so ~680s worst case,
 		// not the 600s render ceiling alone. The blanket 60s budget would kill every
@@ -303,12 +367,10 @@ export function assembleBrigadeToolset(opts: {
 	// through. When supplied, only the named tools survive — both for the
 	// custom-tool array AND for the builtinToolNames allowlist below.
 	const allow = opts.toolsAllow;
-	const allowedCustomTools = allow === undefined
-		? wrappedCustomTools
-		: wrappedCustomTools.filter((t) => allow.includes(t.name));
-	const allowedBuiltinNames = allow === undefined
-		? [...BUILTIN_TOOL_NAMES]
-		: BUILTIN_TOOL_NAMES.filter((n) => allow.includes(n));
+	const allowedCustomTools = wrappedCustomTools.filter((tool) =>
+		executionAllowsTool(tool.name, allow));
+	const allowedBuiltinNames = BUILTIN_TOOL_NAMES.filter((name) =>
+		executionAllowsTool(name, allow));
 	// Per-group / per-sender tool-policy filter. Stacks AFTER the cron
 	// toolsAllow filter and AFTER the ownerOnly wrapping — a pure NAME
 	// narrowing that can only REMOVE tools (allow ∪ alsoAllow, then deny

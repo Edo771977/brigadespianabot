@@ -33,9 +33,11 @@ import type {
 	SubagentStore,
 	WorkspaceStore,
 } from "../store.js";
+import type { CollaborationStore } from "../../collaboration/store.js";
 import { LocalAuthStore } from "./auth-store.js";
 import { LocalBlobStore } from "./blob-store.js";
 import { LocalChannelStore } from "./channel-store.js";
+import { LocalCollaborationStore } from "./collaboration-store.js";
 import { LocalConfigStore } from "./config-store.js";
 import { LocalCronStore } from "./cron-store.js";
 import { LocalExecApprovalStore } from "./exec-approval-store.js";
@@ -98,6 +100,8 @@ export class LocalBrigadeStore implements BrigadeStore {
 	readonly blobs: BlobStore;
 	readonly sessions: SessionStore;
 	readonly messages: MessageStore;
+	readonly collaboration: CollaborationStore;
+	private readonly localCollaboration: LocalCollaborationStore;
 	// (workspace is initialised in the constructor — see below)
 	// (memory is initialised in the constructor — see below)
 	// (sessions is initialised in the constructor — see below)
@@ -148,6 +152,8 @@ export class LocalBrigadeStore implements BrigadeStore {
 		// PR14 — sessions index + per-session transcript JSONL + inbox
 		this.sessions = new LocalSessionStore(opts.stateDir);
 		this.messages = new LocalMessageStore(opts.stateDir);
+		this.localCollaboration = new LocalCollaborationStore(opts.stateDir);
+		this.collaboration = this.localCollaboration;
 	}
 
 	get stateDir(): string {
@@ -155,11 +161,11 @@ export class LocalBrigadeStore implements BrigadeStore {
 	}
 
 	async init(): Promise<void> {
-		// Per-sub-store `init` is called as each PR wires it; nothing to do yet.
+		await this.localCollaboration.init();
 	}
 
 	async close(): Promise<void> {
-		// Same as above.
+		await this.localCollaboration.close();
 	}
 
 	async healthcheck(): Promise<{ ok: boolean; details: Record<string, unknown> }> {

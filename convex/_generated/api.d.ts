@@ -12,6 +12,7 @@ import type * as admin from "../admin.js";
 import type * as auth from "../auth.js";
 import type * as blobs from "../blobs.js";
 import type * as channels from "../channels.js";
+import type * as collaboration from "../collaboration.js";
 import type * as config from "../config.js";
 import type * as cron from "../cron.js";
 import type * as execApprovals from "../execApprovals.js";
@@ -39,6 +40,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   blobs: typeof blobs;
   channels: typeof channels;
+  collaboration: typeof collaboration;
   config: typeof config;
   cron: typeof cron;
   execApprovals: typeof execApprovals;

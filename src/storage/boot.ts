@@ -496,7 +496,7 @@ async function syncWorkspaceMirrors(
  *  key, the stored value updates to the new key's fingerprint. */
 /** Twin of `BUNDLE_VERSION` in convex/health.ts — bump BOTH together
  *  whenever convex/ functions or the schema change shape. */
-const EXPECTED_CONVEX_BUNDLE_VERSION = 7;
+const EXPECTED_CONVEX_BUNDLE_VERSION = 8;
 
 function buildStaleBundleError(remote: string): Error {
 	return Object.assign(

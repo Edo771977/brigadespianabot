@@ -19,9 +19,10 @@ delete process.env.COMPOSIO_API_KEY;
 // regardless of whether `hyperframes` is installed on this host.
 process.env.BRIGADE_HYPERFRAMES_PATH = path.join(tmpHome, "no-such-hyperframes");
 
-const { assembleBrigadeToolset, composeBrigadeBeforeToolCall, makeToolPolicyPredicate, resolveSpawnToolTimeoutMs } =
+const { assembleBrigadeToolset, composeBrigadeBeforeToolCall, executionAllowsTool, makeToolPolicyPredicate, resolveSpawnToolTimeoutMs, TEAM_ATTEMPT_TOOL_ALLOWLIST, makeTeamAttemptTurnSecurity } =
 	await import("./session-wiring.js");
 const { wrapToolExecutionTimeout } = await import("./tools/common.js");
+const { runWithTeamExecutionContext } = await import("../collaboration/execution-context.js");
 const approvalsMod = await import("../core/exec-approvals.js");
 const busMod = await import("./agent-event-bus.js");
 
@@ -62,7 +63,32 @@ after(() => {
 });
 
 describe("assembleBrigadeToolset", () => {
-	it("returns 6 builtins + 23 brigade tools (composio/connect_channel/message_action/find/generate_image/generate_music/generate_speech/generate_video/transcribe_audio/make_document/edit_document/manage_provider/manage_access/manage_channel_access/manage_memory/oauth_authorize + 3 memory + agents_list + manage_agent + manage_skill) = 29 enabled names", () => {
+	it("binds every Team attempt to a non-owner minimal turn policy", () => {
+		const first = makeTeamAttemptTurnSecurity();
+		assert.deepEqual(first, {
+			senderIsOwner: false,
+			teamMode: true,
+			toolsAllow: ["read", "write", "edit", "bash", "grep", "ls", "find", "fetch_url", "web_search", "team_task"],
+		});
+		first.toolsAllow.push("manage_provider");
+		assert.deepEqual(
+			makeTeamAttemptTurnSecurity().toolsAllow,
+			TEAM_ATTEMPT_TOOL_ALLOWLIST,
+			"one caller cannot widen a later Team attempt",
+		);
+	});
+
+	it("applies execution allowlists to tools assembled after the native registry", () => {
+		assert.equal(executionAllowsTool("read", TEAM_ATTEMPT_TOOL_ALLOWLIST), true);
+		assert.equal(executionAllowsTool("team_task", TEAM_ATTEMPT_TOOL_ALLOWLIST), true);
+		assert.equal(executionAllowsTool("web_search", TEAM_ATTEMPT_TOOL_ALLOWLIST), true);
+		assert.equal(executionAllowsTool("fetch_url", TEAM_ATTEMPT_TOOL_ALLOWLIST), true);
+		assert.equal(executionAllowsTool("browser", TEAM_ATTEMPT_TOOL_ALLOWLIST), false);
+		assert.equal(executionAllowsTool("plugin_admin", TEAM_ATTEMPT_TOOL_ALLOWLIST), false);
+		assert.equal(executionAllowsTool("plugin_admin", undefined), true, "normal turns remain unchanged");
+	});
+
+	it("returns 6 builtins + 24 brigade tools (including owner Team orchestration) = 30 enabled names", () => {
 		// `find` moved from the Pi builtin list to a Brigade-native custom tool
 		// (fd's --glob --full-path matches nothing on Windows — see find-tool.ts).
 		const ts = assembleBrigadeToolset({ workspaceDir: workspace, agentId: "main", cwd: workspace });
@@ -89,16 +115,76 @@ describe("assembleBrigadeToolset", () => {
 			"oauth_authorize",
 			"read_memory",
 			"recall_memory",
+			"team",
 			"transcribe_audio",
 			"write_memory",
 		]);
-		assert.equal(ts.enabledToolNames.length, 29);
-		assert.equal(ts.customTools.length, 23);
+		assert.equal(ts.enabledToolNames.length, 30);
+		assert.equal(ts.customTools.length, 24);
 	});
 
 	it("derives capabilities.memory=true when recall_memory present", () => {
 		const ts = assembleBrigadeToolset({ workspaceDir: workspace, agentId: "main", cwd: workspace });
 		assert.equal(ts.capabilities.memory, true);
+	});
+
+	it("leaves team_task lifetime to the attempt context instead of installing the 60s watchdog", async () => {
+		const active = {
+			identifiers: {
+				roomId: "room",
+				runId: "run",
+				taskId: "task",
+				attemptId: "attempt",
+				agentId: "worker",
+				sessionKey: "agent:worker:team:room",
+				runtimeRunId: "runtime",
+			},
+			getStatus: async () => ({
+				runStatus: "running" as const,
+				taskStatus: "running" as const,
+				attemptStatus: "running" as const,
+				leaseExpiresAt: Date.now() + 30_000,
+					updatedAt: Date.now(),
+				}),
+					readTaskResult: async (): Promise<never> => { throw new Error("not called"); },
+					delegateChildren: async (): Promise<never> => { throw new Error("not called"); },
+					postMessage: async (): Promise<never> => { throw new Error("not called"); },
+					readMessages: async (): Promise<never> => { throw new Error("not called"); },
+					offerHandoff: async (): Promise<never> => { throw new Error("not called"); },
+			requestApproval: async (): Promise<never> => { throw new Error("not called"); },
+			attachArtifact: async (): Promise<never> => { throw new Error("not called"); },
+		};
+		const toolset = runWithTeamExecutionContext(active, () => assembleBrigadeToolset({
+			workspaceDir: workspace,
+			agentId: "worker",
+			cwd: workspace,
+			senderIsOwner: false,
+			sessionContext: { key: active.identifiers.sessionKey, agentId: "worker" },
+			toolsAllow: [...TEAM_ATTEMPT_TOOL_ALLOWLIST],
+		}));
+		assert.deepEqual(toolset.builtinToolNames, ["read", "write", "edit", "bash", "grep", "ls"]);
+		assert.deepEqual(toolset.brigadeToolNames, ["find", "team_task"]);
+		assert.deepEqual(
+			toolset.enabledToolNames,
+			TEAM_ATTEMPT_TOOL_ALLOWLIST.filter((name) => name !== "fetch_url" && name !== "web_search"),
+			"late-bound web tools are added by the agent loop after native assembly",
+		);
+		assert.deepEqual(toolset.capabilities, { memory: false, subAgents: false });
+		const teamTask = toolset.customTools.find((tool) => tool.name === "team_task");
+		assert.ok(teamTask);
+
+		const originalSetTimeout = globalThis.setTimeout;
+		let genericWatchdogInstalled = false;
+		globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+			if (delay === 60_000) genericWatchdogInstalled = true;
+			return originalSetTimeout(callback, delay, ...args);
+		}) as typeof setTimeout;
+		try {
+			await teamTask.execute("team-status", { action: "status" });
+		} finally {
+			globalThis.setTimeout = originalSetTimeout;
+		}
+		assert.equal(genericWatchdogInstalled, false);
 	});
 });
 

@@ -5,14 +5,14 @@ export declare const list: import("convex/server").RegisteredQuery<"public", {
 }, Promise<{
     _id: import("convex/values").GenericId<"skills">;
     _creationTime: number;
-    agentId: string | null;
+    createdAt: number;
     name: string;
+    agentId: string | null;
     source: "bundled" | "config" | "managed" | "personal" | "project" | "workspace";
     description: string;
-    createdAt: number;
     body: string;
-    ownerId: string;
     updatedAt: number;
+    ownerId: string;
     frontmatter: string;
     eligibility: {
         os: string[];
@@ -29,14 +29,14 @@ export declare const get: import("convex/server").RegisteredQuery<"public", {
 }, Promise<{
     _id: import("convex/values").GenericId<"skills">;
     _creationTime: number;
-    agentId: string | null;
+    createdAt: number;
     name: string;
+    agentId: string | null;
     source: "bundled" | "config" | "managed" | "personal" | "project" | "workspace";
     description: string;
-    createdAt: number;
     body: string;
-    ownerId: string;
     updatedAt: number;
+    ownerId: string;
     frontmatter: string;
     eligibility: {
         os: string[];
@@ -48,8 +48,8 @@ export declare const get: import("convex/server").RegisteredQuery<"public", {
     disableModelInvocation: boolean;
 } | null>>;
 export declare const upsert: import("convex/server").RegisteredMutation<"public", {
-    agentId: string | null;
     name: string;
+    agentId: string | null;
     source: "bundled" | "config" | "managed" | "personal" | "project" | "workspace";
     description: string;
     body: string;

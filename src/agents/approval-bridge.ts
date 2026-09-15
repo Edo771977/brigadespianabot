@@ -67,6 +67,8 @@ export interface ApprovalDecision {
 
 export interface ApprovalRequest {
 	id: string;
+	/** Server timestamp used to keep approval rows stable across reconnects. */
+	createdAt?: number;
 	command: string;
 	toolName: string;
 	cwd?: string;
@@ -99,6 +101,11 @@ export interface ApprovalRequest {
 
 /** Broadcaster the bridge calls when a new request lands. */
 export type ApprovalBroadcaster = (request: ApprovalRequest) => void;
+/** Observer called exactly once whenever a registered approval settles. */
+export type ApprovalSettlementObserver = (
+	request: ApprovalRequest,
+	decision: ApprovalDecision,
+) => void;
 
 export interface ApprovalBridge {
 	/**
@@ -138,7 +145,10 @@ interface PendingEntry {
  */
 export class InMemoryApprovalBridge implements ApprovalBridge {
 	private readonly pending = new Map<string, PendingEntry>();
-	constructor(private readonly broadcast: ApprovalBroadcaster) {}
+	constructor(
+		private readonly broadcast: ApprovalBroadcaster,
+		private readonly onSettled?: ApprovalSettlementObserver,
+	) {}
 
 	/** Single exit for every settle path: drop the entry, clear the timer, detach
 	 *  the abort listener, resolve once. Idempotent — an absent id returns false. */
@@ -149,6 +159,14 @@ export class InMemoryApprovalBridge implements ApprovalBridge {
 		clearTimeout(entry.timer);
 		entry.detachAbort();
 		entry.resolve(decision);
+		try {
+			this.onSettled?.(entry.request, decision);
+		} catch (err) {
+			log.warn("approval settlement observer failed", {
+				id,
+				err: err instanceof Error ? err.message : String(err),
+			});
+		}
 		return true;
 	}
 
@@ -159,6 +177,7 @@ export class InMemoryApprovalBridge implements ApprovalBridge {
 		const id = req.id ?? crypto.randomUUID();
 		const request: ApprovalRequest = {
 			id,
+			createdAt: Date.now(),
 			command: req.command,
 			toolName: req.toolName,
 			cwd: req.cwd,

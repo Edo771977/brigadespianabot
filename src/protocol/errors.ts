@@ -2,8 +2,8 @@
  * Protocol error catalogue (Step 24).
  *
  * Brand-scrubbed analogue of upstream's `src/gateway/protocol/schema/error-codes.ts`.
- * Six structured codes cover every condition the gateway responds to —
- * intentionally small so the client-side switch never grows unbounded.
+ * A compact structured catalogue covers every condition the gateway responds
+ * to so clients can branch without scraping messages.
  *
  * Convention: codes are SCREAMING_SNAKE_CASE strings, NOT numbers. The
  * `errorShape(code, message, opts)` helper centralises the construction
@@ -25,6 +25,14 @@ export const ErrorCodes = {
 	APPROVAL_NOT_FOUND: "APPROVAL_NOT_FOUND",
 	/** Subsystem is loading / draining; caller may retry shortly. */
 	UNAVAILABLE: "UNAVAILABLE",
+	/** Requested Team room/run/task/decision does not exist. */
+	TEAM_NOT_FOUND: "TEAM_NOT_FOUND",
+	/** Team state changed or the requested transition is no longer valid. */
+	TEAM_CONFLICT: "TEAM_CONFLICT",
+	/** A run's configured token/cost/time/concurrency/attempt budget is exhausted. */
+	TEAM_BUDGET_EXHAUSTED: "TEAM_BUDGET_EXHAUSTED",
+	/** Another stable Team collaboration-domain rule rejected the transition. */
+	TEAM_DOMAIN_ERROR: "TEAM_DOMAIN_ERROR",
 	/**
 	 * The remaining codes the gateway actually emits today (previously
 	 * undocumented string literals — catalogued here so a web/mobile client has
@@ -61,6 +69,41 @@ export function errorShape(
 		...(opts.details !== undefined ? { details: opts.details } : {}),
 		...(opts.retryable !== undefined ? { retryable: opts.retryable } : {}),
 		...(opts.retryAfterMs !== undefined ? { retryAfterMs: opts.retryAfterMs } : {}),
+	};
+}
+
+/**
+ * Preserve the safe structured fields carried by typed request errors.
+ * Unknown throwables remain an opaque `internal` failure; arbitrary object
+ * properties are never copied onto the wire.
+ */
+export function errorShapeFromUnknown(
+	error: unknown,
+	fallbackCode: ErrorCode = ErrorCodes.INTERNAL,
+): ProtocolErrorShape {
+	const record = error && typeof error === "object"
+		? error as {
+			code?: unknown;
+			retryable?: unknown;
+			retryAfterMs?: unknown;
+			details?: unknown;
+		}
+		: undefined;
+	const code = typeof record?.code === "string" && record.code.trim().length > 0
+		? record.code
+		: fallbackCode;
+	const message = error instanceof Error ? error.message : String(error);
+	const retryable = typeof record?.retryable === "boolean" ? record.retryable : undefined;
+	const retryAfterMs = typeof record?.retryAfterMs === "number" &&
+		Number.isFinite(record.retryAfterMs) && record.retryAfterMs >= 0
+		? record.retryAfterMs
+		: undefined;
+	return {
+		code,
+		message,
+		...(retryable !== undefined ? { retryable } : {}),
+		...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+		...(record?.details !== undefined ? { details: record.details } : {}),
 	};
 }
 

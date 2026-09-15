@@ -33,6 +33,25 @@ const DECISIONS: ReadonlyArray<ApprovalDecisionKind> = [
 ];
 
 describe("InMemoryApprovalBridge", () => {
+	it("notifies settlement observers exactly once with the original request", async () => {
+		const settled: Array<{ id: string; kind: string }> = [];
+		const bridge = new InMemoryApprovalBridge(
+			() => {},
+			(request, decision) => settled.push({ id: request.id, kind: decision.kind }),
+		);
+		const pending = bridge.requestApproval({
+			id: "approval-observed",
+			command: "npm test",
+			toolName: "bash",
+			timeoutMs: 1_000,
+			decisions: ["allow-once", "deny"],
+		});
+		assert.equal(bridge.resolveApproval("approval-observed", { kind: "allow-once" }), true);
+		assert.equal(bridge.resolveApproval("approval-observed", { kind: "deny" }), false);
+		await pending;
+		assert.deepEqual(settled, [{ id: "approval-observed", kind: "allow-once" }]);
+	});
+
 	afterEach(() => {
 		setActiveApprovalBridge(null);
 	});

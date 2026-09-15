@@ -31,12 +31,14 @@ interface ListedAgent {
 	name?: string;
 	configured: boolean;
 	self?: boolean;
+	canTeam: true;
 	canSpawn: boolean;
 	canSend: boolean;
 }
 
 interface ListedResult {
 	requester: string;
+	presence: "not_tracked";
 	agents: ListedAgent[];
 }
 
@@ -53,10 +55,12 @@ describe("agents_list tool — enumerate-every-agent contract", () => {
 		writeCfg({ agents: { defaults: { provider: "openrouter" }, main: {} } });
 		const out = await runTool("main");
 		assert.equal(out.requester, "main");
+		assert.equal(out.presence, "not_tracked");
 		assert.equal(out.agents.length, 1);
 		assert.equal(out.agents[0]?.id, "main");
 		assert.equal(out.agents[0]?.configured, true);
 		assert.equal(out.agents[0]?.self, true);
+		assert.equal(out.agents[0]?.canTeam, true);
 	});
 
 	it("enumerates ALL 6 configured agents regardless of spawn allowlist", async () => {
@@ -232,11 +236,11 @@ describe("agents_list tool — enumerate-every-agent contract", () => {
 		assert.equal(math?.name, "Mathematician");
 	});
 
-	it("tool description steers the model to ALWAYS call (not enumerate from memory)", () => {
+	it("tool description distinguishes configuration from live presence", () => {
 		const tool = makeAgentsListTool({ requesterAgentId: "main" });
-		assert.match(tool.description, /List EVERY agent currently configured/);
-		assert.match(tool.description, /canSpawn\/canSend flags/);
-		assert.match(tool.description, /CALL THIS for any who\/which\/how-many agents question/);
-		assert.match(tool.description, /never enumerate from memory/);
+		assert.match(tool.description, /List EVERY configured agent/);
+		assert.match(tool.description, /never call these agents online/);
+		assert.match(tool.description, /active Team room context/);
+		assert.match(tool.description, /canSend\/canSpawn are unrelated/);
 	});
 });

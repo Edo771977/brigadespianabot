@@ -17,6 +17,8 @@
  * WebSocket.
  */
 
+import { TEAM_PROTOCOL_CAPABILITIES } from "./team.js";
+
 /**
  * Framing version. Deliberately still 1, and expected to stay there.
  *
@@ -53,6 +55,7 @@ export const PROTOCOL_CAPABILITIES = [
 	"subscribe.scope",
 	/** `resume { seq }` — gap-free replay from a per-session sequence cursor. */
 	"resume.seq",
+	...TEAM_PROTOCOL_CAPABILITIES,
 ] as const;
 
 export type ProtocolCapability = (typeof PROTOCOL_CAPABILITIES)[number];

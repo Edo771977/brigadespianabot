@@ -1,7 +1,48 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BrigadeRequestError, describeRetry, isBrigadeRequestError, sameErrorCode } from "./errors.js";
+import {
+	BrigadeRequestError,
+	describeRetry,
+	errorShapeFromUnknown,
+	ErrorCodes,
+	isBrigadeRequestError,
+	sameErrorCode,
+} from "./errors.js";
+
+test("catalogues the stable Team Mode failure codes", () => {
+	assert.deepEqual(
+		[
+			ErrorCodes.TEAM_NOT_FOUND,
+			ErrorCodes.TEAM_CONFLICT,
+			ErrorCodes.TEAM_BUDGET_EXHAUSTED,
+			ErrorCodes.TEAM_DOMAIN_ERROR,
+		],
+		["TEAM_NOT_FOUND", "TEAM_CONFLICT", "TEAM_BUDGET_EXHAUSTED", "TEAM_DOMAIN_ERROR"],
+	);
+});
+
+test("the server error adapter preserves typed details and retry guidance only", () => {
+	const typed = Object.assign(new Error("run changed"), {
+		code: ErrorCodes.TEAM_CONFLICT,
+		retryable: false,
+		retryAfterMs: 250,
+		details: { domainCode: "RUN_TERMINAL" },
+		secret: "must-not-cross-wire",
+	});
+	assert.deepEqual(errorShapeFromUnknown(typed), {
+		code: "TEAM_CONFLICT",
+		message: "run changed",
+		retryable: false,
+		retryAfterMs: 250,
+		details: { domainCode: "RUN_TERMINAL" },
+	});
+	assert.doesNotMatch(JSON.stringify(errorShapeFromUnknown(typed)), /must-not-cross-wire/);
+	assert.deepEqual(errorShapeFromUnknown(new Error("boom")), {
+		code: "internal",
+		message: "boom",
+	});
+});
 
 test("the server's structured error survives the reject", () => {
 	// The client used to collapse this into `new Error(message)`, so no renderer

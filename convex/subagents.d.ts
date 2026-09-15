@@ -1,23 +1,23 @@
 export declare const get: import("convex/server").RegisteredQuery<"public", {
-    ownerId: string;
     runId: string;
+    ownerId: string;
 }, Promise<{
     _id: import("convex/values").GenericId<"subagentRuns">;
     _creationTime: number;
     label?: string | undefined;
     model?: string | undefined;
+    startedAt?: number | undefined;
     outcome?: {
         error?: string | undefined;
         reason?: string | undefined;
         text?: ArrayBuffer | undefined;
-        status: "timeout" | "error" | "ok" | "abort";
+        status: "timeout" | "error" | "abort" | "ok";
     } | undefined;
     workspaceDir?: string | undefined;
     controllerSessionKey?: string | undefined;
     requesterOrigin?: ArrayBuffer | undefined;
     runTimeoutSeconds?: number | undefined;
     spawnMode?: "run" | "session" | undefined;
-    startedAt?: number | undefined;
     sessionStartedAt?: number | undefined;
     accumulatedRuntimeMs?: number | undefined;
     endedAt?: number | undefined;
@@ -39,14 +39,14 @@ export declare const get: import("convex/server").RegisteredQuery<"public", {
     attachmentsDir?: string | undefined;
     attachmentsRootDir?: string | undefined;
     retainAttachmentsOnKeep?: boolean | undefined;
+    task: ArrayBuffer;
+    runId: string;
     createdAt: number;
     ownerId: string;
     cleanup: "delete" | "keep";
-    runId: string;
     childSessionKey: string;
     requesterSessionKey: string;
     requesterDisplayKey: string;
-    task: ArrayBuffer;
 } | null>>;
 export declare const getByChildSessionKey: import("convex/server").RegisteredQuery<"public", {
     ownerId: string;
@@ -56,18 +56,18 @@ export declare const getByChildSessionKey: import("convex/server").RegisteredQue
     _creationTime: number;
     label?: string | undefined;
     model?: string | undefined;
+    startedAt?: number | undefined;
     outcome?: {
         error?: string | undefined;
         reason?: string | undefined;
         text?: ArrayBuffer | undefined;
-        status: "timeout" | "error" | "ok" | "abort";
+        status: "timeout" | "error" | "abort" | "ok";
     } | undefined;
     workspaceDir?: string | undefined;
     controllerSessionKey?: string | undefined;
     requesterOrigin?: ArrayBuffer | undefined;
     runTimeoutSeconds?: number | undefined;
     spawnMode?: "run" | "session" | undefined;
-    startedAt?: number | undefined;
     sessionStartedAt?: number | undefined;
     accumulatedRuntimeMs?: number | undefined;
     endedAt?: number | undefined;
@@ -89,14 +89,14 @@ export declare const getByChildSessionKey: import("convex/server").RegisteredQue
     attachmentsDir?: string | undefined;
     attachmentsRootDir?: string | undefined;
     retainAttachmentsOnKeep?: boolean | undefined;
+    task: ArrayBuffer;
+    runId: string;
     createdAt: number;
     ownerId: string;
     cleanup: "delete" | "keep";
-    runId: string;
     childSessionKey: string;
     requesterSessionKey: string;
     requesterDisplayKey: string;
-    task: ArrayBuffer;
 } | null>>;
 export declare const listByRequester: import("convex/server").RegisteredQuery<"public", {
     ownerId: string;
@@ -106,18 +106,18 @@ export declare const listByRequester: import("convex/server").RegisteredQuery<"p
     _creationTime: number;
     label?: string | undefined;
     model?: string | undefined;
+    startedAt?: number | undefined;
     outcome?: {
         error?: string | undefined;
         reason?: string | undefined;
         text?: ArrayBuffer | undefined;
-        status: "timeout" | "error" | "ok" | "abort";
+        status: "timeout" | "error" | "abort" | "ok";
     } | undefined;
     workspaceDir?: string | undefined;
     controllerSessionKey?: string | undefined;
     requesterOrigin?: ArrayBuffer | undefined;
     runTimeoutSeconds?: number | undefined;
     spawnMode?: "run" | "session" | undefined;
-    startedAt?: number | undefined;
     sessionStartedAt?: number | undefined;
     accumulatedRuntimeMs?: number | undefined;
     endedAt?: number | undefined;
@@ -139,14 +139,14 @@ export declare const listByRequester: import("convex/server").RegisteredQuery<"p
     attachmentsDir?: string | undefined;
     attachmentsRootDir?: string | undefined;
     retainAttachmentsOnKeep?: boolean | undefined;
+    task: ArrayBuffer;
+    runId: string;
     createdAt: number;
     ownerId: string;
     cleanup: "delete" | "keep";
-    runId: string;
     childSessionKey: string;
     requesterSessionKey: string;
     requesterDisplayKey: string;
-    task: ArrayBuffer;
 }[]>>;
 export declare const put: import("convex/server").RegisteredMutation<"public", {
     record: any;
@@ -155,28 +155,28 @@ export declare const put: import("convex/server").RegisteredMutation<"public", {
 export declare const markCompleted: import("convex/server").RegisteredMutation<"public", {
     error?: string | undefined;
     endedHookEmittedAt?: number | undefined;
+    runId: string;
     reason: string;
     outcome: any;
     ownerId: string;
-    runId: string;
     endedAt: number;
 }, Promise<{
     _id: import("convex/values").GenericId<"subagentRuns">;
     _creationTime: number;
     label?: string | undefined;
     model?: string | undefined;
+    startedAt?: number | undefined;
     outcome?: {
         error?: string | undefined;
         reason?: string | undefined;
         text?: ArrayBuffer | undefined;
-        status: "timeout" | "error" | "ok" | "abort";
+        status: "timeout" | "error" | "abort" | "ok";
     } | undefined;
     workspaceDir?: string | undefined;
     controllerSessionKey?: string | undefined;
     requesterOrigin?: ArrayBuffer | undefined;
     runTimeoutSeconds?: number | undefined;
     spawnMode?: "run" | "session" | undefined;
-    startedAt?: number | undefined;
     sessionStartedAt?: number | undefined;
     accumulatedRuntimeMs?: number | undefined;
     endedAt?: number | undefined;
@@ -198,17 +198,17 @@ export declare const markCompleted: import("convex/server").RegisteredMutation<"
     attachmentsDir?: string | undefined;
     attachmentsRootDir?: string | undefined;
     retainAttachmentsOnKeep?: boolean | undefined;
+    task: ArrayBuffer;
+    runId: string;
     createdAt: number;
     ownerId: string;
     cleanup: "delete" | "keep";
-    runId: string;
     childSessionKey: string;
     requesterSessionKey: string;
     requesterDisplayKey: string;
-    task: ArrayBuffer;
 } | null>>;
 export declare const remove: import("convex/server").RegisteredMutation<"public", {
-    ownerId: string;
     runId: string;
+    ownerId: string;
 }, Promise<boolean>>;
 //# sourceMappingURL=subagents.d.ts.map

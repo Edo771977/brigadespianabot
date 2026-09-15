@@ -134,6 +134,7 @@ const SUBSCRIPTION_LIMIT_PATTERNS: RegExp[] = [
   /(?:claude|plan|subscription) usage limit/i,
   /usage limit (?:reached|hit|exceeded)/i,
   /hit your usage limit/i,
+  /hit your (?:daily|weekly|monthly) limit/i,
   /usage_limit_reached/i,
   /usage_not_included/i,
   /limit will reset at/i,

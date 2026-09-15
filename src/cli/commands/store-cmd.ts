@@ -475,15 +475,16 @@ export async function runStoreMigrateCmd(opts: StoreMigrateOptions): Promise<num
 				},
 	});
 
-	if (opts.json) {
-		process.stdout.write(`${JSON.stringify({ ok: true, report }, null, 2)}\n`);
-		return 0;
-	}
-
 	const total = report.domains.reduce((acc, d) => acc + d.copied, 0);
 	const skipped = report.domains.filter((d) => d.skipped).length;
+	const succeeded = skipped === 0 && (report.dryRun || report.sentinelWritten);
+	if (opts.json) {
+		process.stdout.write(`${JSON.stringify({ ok: succeeded, report }, null, 2)}\n`);
+		return succeeded ? 0 : 1;
+	}
+
 	process.stdout.write(
-		`\n${chalk.green("✓")} migrated ${chalk.bold(report.from)} → ${chalk.bold(report.to)} · ` +
+		`\n${succeeded ? chalk.green("✓") : chalk.yellow("⚠")} ${succeeded ? "migrated" : "migration incomplete"} ${chalk.bold(report.from)} → ${chalk.bold(report.to)} · ` +
 			`${chalk.bold(String(total))} items across ${report.domains.length} domains · ` +
 			`${report.durationMs}ms\n`,
 	);
@@ -492,6 +493,10 @@ export async function runStoreMigrateCmd(opts: StoreMigrateOptions): Promise<num
 	}
 	if (report.dryRun) {
 		process.stdout.write(chalk.dim(`  --dry-run: no data was written, no sentinel flipped\n`));
+	} else if (skipped > 0) {
+		process.stdout.write(
+			chalk.yellow(`  source remains authoritative; fix the failed domains and retry migration\n`),
+		);
 	} else if (report.sentinelWritten) {
 		process.stdout.write(chalk.dim(`  ~/.brigade/mode.sentinel now points to ${report.to}\n`));
 	} else {
@@ -514,6 +519,5 @@ export async function runStoreMigrateCmd(opts: StoreMigrateOptions): Promise<num
 			process.stdout.write(chalk.dim(`  local filesystem copy kept (--keep-source) — delete it when you're confident\n`));
 		}
 	}
-	return 0;
+	return succeeded ? 0 : 1;
 }
-

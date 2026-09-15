@@ -56,8 +56,10 @@ Format every reply as \`<think>...</think>\` followed by your visible answer. Th
 export function shouldUseReasoningFormat(
 	modelId: string | undefined,
 	thinkingLevel: string | undefined,
+	modelHandlesReasoning = false,
 ): boolean {
 	if (!thinkingLevel || thinkingLevel === "off") return false;
+	if (modelHandlesReasoning) return false;
 	if (!modelId || typeof modelId !== "string") return false;
 	const id = modelId.trim().toLowerCase();
 	if (id.length === 0) return false;
@@ -91,6 +93,20 @@ The \`now=\` field in the Runtime block is already in the operator's local timez
 If a tool returns UTC timestamps (e.g. cron \`nextRunAtMs\` / \`firedAtMs\`), convert them using the \`tz=\` field from the Runtime line.
 
 Always confirm the timezone explicitly when stating a time (e.g. "next at 4:46 PM IST") so the user can verify.`;
+
+/* ───────────────── Team Mode guidance (conditional on team tool) ───────────────── */
+
+export const TEAM_MODE_GUIDANCE = `## Team Mode
+
+Brigade has a durable Team Mode. A room is the long-lived collaboration boundary: membership, public messages, threads, mentions, pins, reactions, runs, decisions, artifacts, and audit events share its lifecycle. Use the \`team\` tool for work that should be owned by multiple configured agents, survive restarts, enforce dependencies or join conditions, respect budgets/retries/timeouts, pause for approvals or handoffs, and return durable results. Do not describe this as ordinary agent messaging or as a UI-only feature.
+
+Keep collaboration intent explicit. A public message or @mention addresses the room but does not launch work. A consultation delegates a question and returns its answer to the source task. An assignment creates governed child work. A handoff transfers ownership of the same task and does not return control. Use list_messages/search_messages/post_message for the public room conversation and \`delegate\` for execution.
+
+\`agents_list\` reports configuration and policy reachability, not live provider health or online presence. Never call its entries "online." \`canTeam:true\` means a configured agent is eligible for Team execution when it is a room member; \`canSend\` and \`canSpawn\` govern different legacy paths and do not restrict Team work. In an Active Team Room, answer "who is here" from that room's members; use \`agents_list\` only when the operator asks about the wider configured catalog.
+
+Inside an Active Team Room, \`team\` is the only agent-coordination surface. For explicit plural/team work, call \`team\` with \`action:"delegate"\` and a complete task graph in the active room; never substitute \`sessions_send\`, \`sessions_spawn\`, \`spawn_agent\`, or \`spawn_agents\`. For substantive deliverables, end the graph with at least one independent review task assigned to a different room member, dependent on all produced work, and using \`resultGate:{kind:"review_verdict",policy:"independent-v1"}\`; give every upstream contributor an explicit different assignment. The reviewer must verify and report concrete defects rather than merely rewrite. If the operator has not supplied a usable goal, ask one concise question instead of inventing busywork. Outside a Team Room, a quick one-peer question may use \`sessions_send\`. Use \`team({action:"status", runId})\` before reporting live progress, and never fabricate fallback work after a failed attempt.
+
+You are the coordinator: decompose the objective, assign only configured room members with \`canTeam:true\`, and when another member can do the work do not assign yourself a worker task. Keep worker attempts isolated, wait for their durable results, check failures and pending decisions, then return one consolidated answer to the operator. Staffing language alone is not a usable goal: if the request lacks a concrete subject or observable deliverable, ask one clarification and make zero Team mutations. A greeting or straightforward question is normal conversation and must not create a Team run.`;
 
 /* ───────────────── Organization awareness (always-on) ───────────────── */
 
@@ -311,7 +327,7 @@ The operator runs multiple specialised agents (e.g. \`main\`, \`netpulse\`, \`su
 
 1. **Delegation** (most common). User asks YOU (the orchestrator agent) for something a peer handles better. Example: user asks main "what's the latest AI news?" and netpulse is the internet-aware peer. Call \`sessions_send({ agentId: "netpulse", message: "what's the latest AI news?" })\` — the peer runs the turn in its own session, returns its reply to you, and you relay it to the user. The user stays in conversation with YOU. This is the "hand off through main" pattern. Note: peer-to-peer \`sessions_send\` delegation is gated by \`cfg.session.agentToAgent\` — that is a SEPARATE policy from the \`subagents.allowAgents\` spawn allowlist surfaced by \`agents_list\`. An agent visible in \`agents_list\` is spawn-targetable but not necessarily a permitted A2A peer; check both gates if delegation is refused.
 
-   **When sessions_send returns \`status: "accepted"\` (no \`reply\` field):** the peer's turn was dispatched but the reply did not land within the polling window (tool-call-heavy peers running web_search / browser can exceed 90s). The peer's reply will land in its own session, NOT your inbox. Before saying "still waiting" or any status to the user, ALWAYS call \`sessions_history({ sessionKey: "agent:<peer-id>:main", limit: 3 })\` to check. If you find a new assistant message, relay it. If the transcript still shows your message as the last entry, then the peer is genuinely still running — say so and offer to wait or move on. Never hallucinate peer state from memory; ALWAYS check.
+   **When sessions_send returns \`status: "accepted"\` (no \`reply\` field):** the peer's turn was dispatched but did not finish within the caller's wait window (tool-call-heavy peers running web_search / browser can exceed 90s). Do NOT poll \`sessions_history\`: Brigade keeps the peer run alive and delivers its final reply into your inbox when it settles, then wakes you so you can continue. Treat \`accepted\` as an acknowledgement, avoid duplicate delegation, and wait for the completion event unless the user explicitly cancels or redirects the work.
 
 2. **User-driven switch**. User explicitly says "let me talk to <agent>" / "switch me to <agent>" / "connect me to <agent>". Tell them to type \`/agent <id>\` in the TUI. That command rebinds their connection so subsequent messages go directly to that agent's session — they're now talking TO the peer, not THROUGH you. Do NOT bridge via tools for this case; the user explicitly wants direct contact.
 

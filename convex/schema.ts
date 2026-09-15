@@ -844,4 +844,187 @@ export default defineSchema({
   })
     .index("by_sha256", ["sha256"])
     .index("by_owner_storage", ["ownerId", "storageId"]),
+
+  // ===========================================================================
+  // 17. TEAM MODE COLLABORATION
+  // ===========================================================================
+  // Each domain entity is one bounded row with its routing/query fields
+  // duplicated outside `record`. This keeps the storage normalized and
+  // indexable while the versioned TypeScript domain record remains the
+  // lossless adapter contract. `collaborationState.revision` is the OCC token
+  // for an atomic state+events+outbox+receipt commit.
+  collaborationState: defineTable({
+    ownerId: v.string(),
+    revision: v.number(),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerId"]),
+
+  collaborationRooms: defineTable({
+    ownerId: v.string(),
+    roomId: v.string(),
+    status: v.string(),
+    updatedAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_room", ["ownerId", "roomId"])
+    .index("by_owner_status_updated", ["ownerId", "status", "updatedAt"]),
+
+  collaborationRuns: defineTable({
+    ownerId: v.string(),
+    runId: v.string(),
+    roomId: v.string(),
+    status: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_run", ["ownerId", "runId"])
+    .index("by_owner_room_created", ["ownerId", "roomId", "createdAt"])
+    .index("by_owner_status_updated", ["ownerId", "status", "updatedAt"]),
+
+  collaborationTasks: defineTable({
+    ownerId: v.string(),
+    taskId: v.string(),
+    runId: v.string(),
+    status: v.string(),
+    priority: v.number(),
+    nextAttemptAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_task", ["ownerId", "taskId"])
+    .index("by_owner_run_created", ["ownerId", "runId", "createdAt"])
+    .index("by_owner_run_status_priority", ["ownerId", "runId", "status", "priority"]),
+
+  collaborationAttempts: defineTable({
+    ownerId: v.string(),
+    attemptId: v.string(),
+    runId: v.string(),
+    taskId: v.string(),
+    status: v.string(),
+    number: v.number(),
+    leaseOwnerId: v.string(),
+    leaseFence: v.number(),
+    leaseExpiresAt: v.number(),
+    startedAt: v.number(),
+    updatedAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_attempt", ["ownerId", "attemptId"])
+    .index("by_owner_task_number", ["ownerId", "taskId", "number"])
+    .index("by_owner_run_status", ["ownerId", "runId", "status"])
+    .index("by_owner_status_lease", ["ownerId", "status", "leaseExpiresAt"]),
+
+  collaborationHandoffs: defineTable({
+    ownerId: v.string(),
+    handoffId: v.string(),
+    runId: v.string(),
+    taskId: v.string(),
+    status: v.string(),
+    expiresAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_handoff", ["ownerId", "handoffId"])
+    .index("by_owner_run_created", ["ownerId", "runId", "createdAt"])
+    .index("by_owner_status_expiry", ["ownerId", "status", "expiresAt"]),
+
+  collaborationApprovals: defineTable({
+    ownerId: v.string(),
+    approvalId: v.string(),
+    runId: v.string(),
+    taskId: v.string(),
+    status: v.string(),
+    expiresAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_approval", ["ownerId", "approvalId"])
+    .index("by_owner_run_created", ["ownerId", "runId", "createdAt"])
+    .index("by_owner_status_expiry", ["ownerId", "status", "expiresAt"]),
+
+  collaborationArtifacts: defineTable({
+    ownerId: v.string(),
+    artifactId: v.string(),
+    runId: v.string(),
+    taskId: v.optional(v.string()),
+    attemptId: v.optional(v.string()),
+    kind: v.string(),
+    createdAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_artifact", ["ownerId", "artifactId"])
+    .index("by_owner_run_created", ["ownerId", "runId", "createdAt"])
+    .index("by_owner_task_created", ["ownerId", "taskId", "createdAt"]),
+
+  collaborationMessages: defineTable({
+    ownerId: v.string(),
+    messageId: v.string(),
+    roomId: v.string(),
+    authorId: v.string(),
+    threadRootMessageId: v.optional(v.string()),
+    runId: v.optional(v.string()),
+    taskId: v.optional(v.string()),
+    pinnedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_message", ["ownerId", "messageId"])
+    .index("by_owner_room_created", ["ownerId", "roomId", "createdAt"])
+    .index("by_owner_room_thread_created", ["ownerId", "roomId", "threadRootMessageId", "createdAt"])
+    .index("by_owner_room_pinned", ["ownerId", "roomId", "pinnedAt"]),
+
+  collaborationEvents: defineTable({
+    ownerId: v.string(),
+    eventId: v.string(),
+    roomId: v.string(),
+    runId: v.optional(v.string()),
+    taskId: v.optional(v.string()),
+    attemptId: v.optional(v.string()),
+    roomSeq: v.number(),
+    type: v.string(),
+    commandId: v.string(),
+    createdAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_event", ["ownerId", "eventId"])
+    .index("by_owner_room_seq", ["ownerId", "roomId", "roomSeq"])
+    .index("by_owner_run_seq", ["ownerId", "runId", "roomSeq"])
+    .index("by_owner_run_created", ["ownerId", "runId", "createdAt"])
+    .index("by_owner_command", ["ownerId", "commandId"]),
+
+  collaborationOutbox: defineTable({
+    ownerId: v.string(),
+    outboxId: v.string(),
+    status: v.string(),
+    nextAttemptAt: v.number(),
+    claimExpiresAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_outbox", ["ownerId", "outboxId"])
+    .index("by_owner_status_next", ["ownerId", "status", "nextAttemptAt"])
+    .index("by_owner_status_claim_expiry", ["ownerId", "status", "claimExpiresAt"]),
+
+  collaborationCommandReceipts: defineTable({
+    ownerId: v.string(),
+    commandId: v.string(),
+    operation: v.string(),
+    fingerprint: v.string(),
+    committedAt: v.number(),
+    record: v.any(),
+  })
+    .index("by_owner_command", ["ownerId", "commandId"])
+    .index("by_owner_committed", ["ownerId", "committedAt"]),
+
+  collaborationRoomSequences: defineTable({
+    ownerId: v.string(),
+    roomId: v.string(),
+    roomSeq: v.number(),
+  }).index("by_owner_room", ["ownerId", "roomId"]),
 });

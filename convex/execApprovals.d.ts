@@ -4,17 +4,17 @@ export declare const list: import("convex/server").RegisteredQuery<"public", {
 }, Promise<{
     _id: import("convex/values").GenericId<"execApprovals">;
     _creationTime: number;
+    createdAt: number;
+    kind: "exact" | "pattern";
     agentId: string;
     value: string;
-    kind: "exact" | "pattern";
-    createdAt: number;
     ownerId: string;
     valueNormalised: string;
 }[]>>;
 export declare const insert: import("convex/server").RegisteredMutation<"public", {
+    kind: "exact" | "pattern";
     agentId: string;
     value: string;
-    kind: "exact" | "pattern";
     ownerId: string;
     valueNormalised: string;
 }, Promise<{

@@ -56,6 +56,7 @@ import { getActiveChannelManager } from "./channels/active-manager.js";
 import type { GroupToolPolicyConfig } from "./channels/access-control/index.js";
 import { getOrLoadExtensionRegistry } from "./extensions/registry-cache.js";
 import { assembleSystemPrompt } from "../system-prompt/assembler.js";
+import { TEAM_MODE_GUIDANCE } from "../system-prompt/guidance.js";
 import {
   loadHeartbeatFile,
   loadWorkspaceContextFiles,
@@ -76,6 +77,13 @@ import {
   markBootstrapDeliveredToSession,
 } from "../sessions/bootstrap-marker.js";
 import { createSubsystemLogger } from "../logging/subsystem-logger.js";
+import {
+  addTotals,
+  emptyTotals,
+  toTotals,
+  type UsageContribution,
+  type UsageTotals,
+} from "./usage/ledger.js";
 import { runWithRetry } from "./retry-policy.js";
 import { BrigadeRetryError, scrubAnthropicRefusalSentinel } from "./error-classifier.js";
 import { cleanProviderError } from "../core/model-caps.js";
@@ -144,11 +152,13 @@ import { runWithThinkingFallback } from "./thinking-fallback.js";
 import {
   assembleBrigadeToolset,
   composeBrigadeBeforeToolCall,
+  executionAllowsTool,
   type GuardContextRef,
 } from "./session-wiring.js";
 import { buildSessionContext } from "./session-context.js";
 import { getSubagentDepthFromSessionKey } from "./subagent-policy.js";
 import { getSpawnedKeysForSession } from "./subagent-registry.js";
+import { isConfiguredAgentId } from "./configured-agent.js";
 import { emitAgentEvent } from "./agent-event-bus.js";
 import { randomUUID } from "node:crypto";
 import { buildCompactionFocus } from "./compaction/summarizer-prompt.js";
@@ -178,6 +188,7 @@ import { PROVIDERS } from "../providers/catalog.js";
 import { orderProfilesForSelection } from "../auth/profile-cooldown.js";
 import { readProfiles } from "../auth/profiles.js";
 import { tryGetRuntimeContext } from "../storage/runtime-context.js";
+import { buildTeamChatContext } from "../collaboration/chat-context.js";
 import {
   wrapStreamFnWithIdleTimeout,
   wrapStreamFnWithStopReasonRecovery,
@@ -274,6 +285,26 @@ export interface RunSingleTurnArgs {
   provider: string;
   modelId: string;
   message: string;
+  /** Execute a synthetic system-driven turn as a non-display Pi custom message.
+   * The model receives it, but transcript projections do not mistake it for an
+   * operator-authored user bubble. */
+  internalTurn?: boolean;
+  /** Durable key written into the hidden transcript entry for exactly-once replay checks. */
+  internalTurnId?: string;
+  /**
+   * Gateway-owned liveness predicate for Team coordinator selection. Direct
+   * CLI/test callers omit it and fall back to configuration membership.
+   */
+  teamAgentIsRunnable?: (agentId: string) => boolean | Promise<boolean>;
+  /** Synthetic coordinator returns may inspect Team state but cannot mutate it. */
+  teamToolReadOnly?: boolean;
+  /**
+   * Optional caller-owned execution id. Team Mode uses the durable attempt's
+   * runtimeRunId so Pi events, approval prompts, live-session cancellation,
+   * and the collaboration record all refer to the same execution. Ordinary
+   * turns omit it and retain the existing per-turn UUID behavior.
+   */
+  runId?: string;
   /**
    * OPTIONAL inbound IMAGE blocks to send INLINE with this turn's user message
    * (A3 — "auto-see inbound images"). Each is a Pi `ImageContent` minus the
@@ -369,6 +400,12 @@ export interface RunSingleTurnArgs {
    *     names; stacks AFTER the senderIsOwner ownerOnly filter.
    */
   cronMode?: boolean;
+  /**
+   * Leased Team attempt. Uses the delegated/minimal prompt posture so
+   * MEMORY.md, onboarding, heartbeat, and operator-only prompt sections are
+   * not exposed to a task-scoped worker.
+   */
+  teamMode?: boolean;
   lightContext?: boolean;
   toolsAllow?: string[];
   /**
@@ -402,6 +439,9 @@ export interface RunSingleTurnResult {
   isNewSession: boolean;
   reply: string;
   messages: unknown[];
+  /** Provider usage produced by this invocation only, across every model
+   * round-trip (tool calls and length continuations included). */
+  usage: UsageTotals;
   // Filled when this turn was actually served by a fallback candidate
   // (resilient-turn path) — left undefined for the primary-only path.
   servedBy?: { provider: string; modelId: string };
@@ -409,6 +449,22 @@ export interface RunSingleTurnResult {
   // result, including the primary if it failed. Empty when the primary
   // succeeded on first try.
   fallbackAttempts?: Array<{ provider: string; modelId: string; reason: string; error: string }>;
+}
+
+/** Sum only assistant round-trips created by the current invocation. Tool-use
+ * loops and length continuations can produce more than one assistant message. */
+export function summarizeTurnUsage(
+  messages: readonly unknown[],
+  messageCountBeforeTurn: number,
+): UsageTotals {
+  return messages
+    .slice(Math.max(0, messageCountBeforeTurn))
+    .reduce<UsageTotals>((total, message) => {
+      const candidate = message as { role?: unknown; usage?: UsageContribution };
+      return candidate.role === "assistant"
+        ? addTotals(total, toTotals(candidate.usage))
+        : total;
+    }, emptyTotals());
 }
 
 export async function runSingleTurn(args: RunSingleTurnArgs): Promise<RunSingleTurnResult> {
@@ -1025,6 +1081,10 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
           },
         }
       : {}),
+    ...(args.teamAgentIsRunnable
+      ? { teamAgentIsRunnable: args.teamAgentIsRunnable }
+      : {}),
+    ...(args.teamToolReadOnly === true ? { teamToolReadOnly: true } : {}),
     subagentContext: {
       parentSessionKey: resolved.sessionKey,
       callerDepth: callerSubagentDepth,
@@ -1086,7 +1146,14 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
     // swaps the identity opener for the SUB-AGENT banner and gates off
     // operator-only sections; the workspace loader drops BOOTSTRAP.md +
     // MEMORY.md from the persona set; the heartbeat file is skipped.
+    // Team attempts share the delegated/minimal prompt posture even though
+    // their durable session key is not encoded as a normal sub-agent key.
+    // This drops MEMORY.md + BOOTSTRAP.md and owner-only prompt sections.
     subagentMode: callerSubagentDepth > 0,
+    // Team workers are durable leased attempts with an async coordination
+    // backplane. They share the minimal persona/memory posture of sub-agents,
+    // but need a truthful Team-specific role contract in the prompt.
+    teamWorkerMode: args.teamMode === true,
     // Cron primitive — when the cron service fires a scheduled run, the
     // executor passes `cronMode: true`. Assembler swaps the opener for the
     // cron banner + gates operator-only sections (same shape as
@@ -1224,7 +1291,7 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
     fetchUrlTool,
     ...(webSearchTool ? [webSearchTool] : []),
     ...(browserTool ? [browserTool] : []),
-  ];
+  ].filter((tool) => executionAllowsTool(tool.name, args.toolsAllow));
   const webToolNames = webTools.map((t) => t.name);
   brigadeCustomTools.push(...webTools);
   // These three are pushed AFTER `assembleBrigadeToolset` returns, so they miss
@@ -1243,7 +1310,9 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
   const allEnabledToolNames = [
     ...new Set([
       ...enabledToolNames,
-      ...extensionRegistry.toolNames({ toolset: toolsetProfile }),
+      ...extensionRegistry
+        .toolNames({ toolset: toolsetProfile })
+        .filter((name) => executionAllowsTool(name, args.toolsAllow)),
       ...webToolNames,
     ]),
   ];
@@ -1566,6 +1635,27 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
     ...(args.channelApprovalRoute ? { channelApprovalRoute: args.channelApprovalRoute } : {}),
   });
 
+  let teamChatContextBlock: string | undefined;
+  try {
+    const runtimeContext = tryGetRuntimeContext();
+    if (runtimeContext) {
+      teamChatContextBlock = await buildTeamChatContext({
+        store: runtimeContext.store.collaboration,
+        sessionKey: resolved.sessionKey,
+        agentId,
+        validateAgentId: args.teamAgentIsRunnable
+          ?? ((candidate) => isConfiguredAgentId(turnConfig, candidate, agentId)),
+      });
+    }
+  } catch (err) {
+    // Live room orientation improves coordination but must never make the
+    // user's ordinary conversation unavailable when storage is degraded.
+    log.warn("Team chat context unavailable", {
+      sessionKey: resolved.sessionKey,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // Pin the assembled persona before the first turn. Done after
   // createAgentSession (which has already set up Pi's stock prompt) but
   // before prompt() so the model sees the brigade-flavoured persona on
@@ -1584,6 +1674,7 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
     // happily reply with their training-data identity ("I'm your coding
     // assistant") instead of following IDENTITY.md.
     modelId: args.modelId,
+    modelReasoning: (model as { reasoning?: boolean }).reasoning === true,
     thinkingLevel: args.thinkingLevel ?? "off",
     bootstrapPhase: effectivePhase,
     toolDescriptions,
@@ -1709,7 +1800,9 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
         ? await buildAutoRecallBlock(memoryCapability, args.message, { origin: recallOrigin })
         : undefined,
       contextEngineAddition,
+      teamChatContextBlock,
     ),
+    teamChatContextBlock,
     // Cron primitive: thread the `lightContext` flag down to the persona
     // builder. When set, the entire workspace bootstrap surface is dropped
     // for a minimal prompt (cron's task message carries the context).
@@ -1827,7 +1920,7 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
   // is detached at the end of the function so listeners don't pile
   // up across the gateway's long-running process. This is the standard
   // global agent-events registry pattern.
-  const runId = randomUUID();
+  const runId = args.runId?.trim() || randomUUID();
   // Wave L P2#10 — per-turn bound logger. Every log emitted via
   // `turnLog` automatically carries `agentId / sessionId / runId`
   // so observability tooling can correlate without each call-site
@@ -2188,7 +2281,17 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
               // + the model supports them (A3); otherwise the historical
               // string-only prompt (byte-identical) — `promptImageOptions` is
               // `undefined` in that case and Pi receives just the text.
-              if (promptImageOptions) {
+              if (args.internalTurn === true) {
+                await (session as AgentSession).sendCustomMessage({
+                  customType: "brigade-internal-turn",
+                  content: scrubbedMessage,
+                  display: false,
+                  details: {
+                    source: "system",
+                    ...(args.internalTurnId ? { idempotencyKey: args.internalTurnId } : {}),
+                  },
+                }, { triggerTurn: true });
+              } else if (promptImageOptions) {
                 await (session as AgentSession).prompt(scrubbedMessage, promptImageOptions);
               } else {
                 await (session as AgentSession).prompt(scrubbedMessage);
@@ -2203,6 +2306,14 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
               assertNoProviderErrorStop(session as AgentSession);
             },
             {
+              ...(args.internalTurn === true ? {
+                reprompt: (text: string) => (session as AgentSession).sendCustomMessage({
+                  customType: "brigade-internal-turn",
+                  content: text,
+                  display: false,
+                  details: { source: "system-retry" },
+                }, { triggerTurn: true }),
+              } : {}),
               // The operator's cancellation, read at decision time. An abort
               // must never be answered with a fresh billed turn.
               aborted: () => args.signal?.aborted === true,
@@ -2351,6 +2462,10 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
     continuations > 0
       ? joinAssistantTextFrom(session as AgentSession, messageCountBeforeTurn)
       : extractLastAssistantText(session as AgentSession);
+  const turnUsage = summarizeTurnUsage(
+    (session as AgentSession).messages,
+    messageCountBeforeTurn,
+  );
 
   // The turn produced a real assistant reply — we are past
   // `assertNoProviderErrorStop`, so this is not an error masquerading as a
@@ -2393,6 +2508,7 @@ async function runSingleTurnLocked(p: RunSingleTurnLockedArgs): Promise<RunSingl
     isNewSession: resolved.isNew,
     reply,
     messages: (session as AgentSession).messages.slice(),
+    usage: turnUsage,
   };
   } finally {
     // Safety net: if anything between subscribe-time and the success-
@@ -2429,6 +2545,24 @@ function mergeEphemeralSuffix(
   return kept.join("\n\n");
 }
 
+const TEAM_WORKER_OVERRIDE_GUARD = `# Team Task Context
+
+You are a TEAM WORKER running one durable assigned task inside Brigade. Complete only the authoritative assignment supplied in the hidden turn, stay inside the Team worker tool surface, and return one user-visible result to the coordinator. Do not act as the operator-facing coordinator, broaden the task, or expose private reasoning.`;
+
+/** Explicit persona overrides remain exact for ordinary sessions, but cannot
+ * erase code-owned Team authority and isolation instructions. */
+export function applyProtectedTeamPromptLayer(args: {
+  override: string;
+  teamWorkerMode?: boolean;
+  teamChatContextBlock?: string;
+}): string {
+  if (args.teamWorkerMode) return `${args.override}\n\n${TEAM_WORKER_OVERRIDE_GUARD}`;
+  if (args.teamChatContextBlock?.trim()) {
+    return `${args.override}\n\n${TEAM_MODE_GUIDANCE}\n\n${args.teamChatContextBlock.trim()}`;
+  }
+  return args.override;
+}
+
 // Build the per-turn system prompt. Three steps:
 //   1. Honour an explicit override in brigade.json (escape hatch — replaces
 //      the assembled prompt entirely).
@@ -2443,6 +2577,8 @@ async function buildPersonaPrompt(args: {
   modelLabel: string;
   /** Raw model id (without provider prefix). Drives per-family guidance. */
   modelId: string;
+  /** True when the resolved model handles reasoning out-of-band. */
+  modelReasoning?: boolean;
   thinkingLevel: string;
   bootstrapPhase: BootstrapPhase;
   // Tool surface to advertise in the system prompt. Caller resolves these
@@ -2459,6 +2595,7 @@ async function buildPersonaPrompt(args: {
     skills?: boolean;
     subAgents?: boolean;
     subagentMode?: boolean;
+    teamWorkerMode?: boolean;
     cronMode?: boolean;
   };
   /**
@@ -2471,6 +2608,8 @@ async function buildPersonaPrompt(args: {
    * the cached prefix. Used by sub-agent task framing in Primitive #6.
    */
   ephemeralSuffix?: string;
+  /** Code-owned active-room context, preserved even with a persona override. */
+  teamChatContextBlock?: string;
   /** The turn's config (read once upstream). Falls back to a read when omitted. */
   config?: BrigadeConfig;
   /**
@@ -2514,7 +2653,13 @@ async function buildPersonaPrompt(args: {
 }): Promise<string> {
   const config = args.config ?? readConfigOrInit();
   const override = resolveSystemPromptOverride({ config, agentId: args.agentId });
-  if (override) return override;
+  if (override) {
+    return applyProtectedTeamPromptLayer({
+      override,
+      teamWorkerMode: args.capabilities?.teamWorkerMode === true,
+      teamChatContextBlock: args.teamChatContextBlock,
+    });
+  }
 
   // Primitive #6 — sub-agent mode flips three things in the assembled prompt:
   //   1. The persona loader drops BOOTSTRAP.md + MEMORY.md (operator-only).
@@ -2523,6 +2668,7 @@ async function buildPersonaPrompt(args: {
   //      gates off operator-only sections (CLI quick ref, execution bias,
   //      output formatting, per-family identity override, memory wrapper).
   const subagentMode = args.capabilities?.subagentMode === true;
+  const teamWorkerMode = args.capabilities?.teamWorkerMode === true;
   const cronMode = args.capabilities?.cronMode === true;
   const lightContext = args.lightContext === true;
 
@@ -2531,8 +2677,8 @@ async function buildPersonaPrompt(args: {
   // configured voice, just without the operator-onboarding ritual).
   const personaFiles = lightContext
     ? []
-    : await loadWorkspaceContextFiles(args.workspaceDir, { subagentMode: subagentMode || cronMode });
-  const heartbeatFile = (subagentMode || cronMode || lightContext)
+    : await loadWorkspaceContextFiles(args.workspaceDir, { subagentMode: subagentMode || teamWorkerMode || cronMode });
+  const heartbeatFile = (subagentMode || teamWorkerMode || cronMode || lightContext)
     ? undefined
     : await loadHeartbeatFile(args.workspaceDir);
   if (personaFiles.length === 0 && !heartbeatFile) return "";
@@ -2583,6 +2729,7 @@ async function buildPersonaPrompt(args: {
     // `pickModelFamilyGuidance` (OpenAI / Google identity-override blocks)
     // and conditional-capability gates fire on the right matches.
     modelId: args.modelId,
+    modelReasoning: args.modelReasoning,
     thinkingLevel: args.thinkingLevel,
     capabilities: args.capabilities,
     skillsPromptBlock: args.skillsPromptBlock,

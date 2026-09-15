@@ -22,6 +22,8 @@
 //   • skills            — managed dir → skills table
 //   • subagent runs     — in-memory map → subagentRuns (when present)
 //   • org chart cache   — chart PNGs → orgChartCache
+//   • Team Mode         — normalized rooms, runs, tasks, attempts, handoffs,
+//                         approvals, artifacts, events, outbox and receipts
 //
 // What's NOT migrated (lives on disk in both modes by design):
 //   • mode.sentinel itself
@@ -39,7 +41,12 @@
 // `--to filesystem` migrate always leaves the convex side intact.
 
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
+import type {
+	CollaborationStore,
+	CollaborationStoreSnapshot,
+} from "../collaboration/store.js";
 import { resolveAgentWorkspaceDir } from "../config/paths.js";
 import { wipeLocalBrigadeState } from "./factory-reset.js";
 import { LocalBrigadeStore } from "./local/index.js";
@@ -105,6 +112,107 @@ export interface MigrateReport {
 
 function sha256OfJson(value: unknown): string {
 	return createHash("sha256").update(JSON.stringify(value ?? null)).digest("hex");
+}
+
+type CollaborationSnapshotImporter = CollaborationStore & {
+	importSnapshot(snapshot: CollaborationStoreSnapshot): Promise<void>;
+};
+
+const COLLABORATION_COLLECTIONS = [
+	"rooms",
+	"runs",
+	"tasks",
+	"attempts",
+	"handoffs",
+	"approvals",
+	"artifacts",
+	"events",
+	"outbox",
+	"commandReceipts",
+	"roomSequences",
+] as const satisfies ReadonlyArray<keyof CollaborationStoreSnapshot>;
+
+function collaborationRecordId(
+	collection: (typeof COLLABORATION_COLLECTIONS)[number],
+	value: unknown,
+): string | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const record = value as Record<string, unknown>;
+	const id =
+		collection === "events"
+			? record.eventId
+			: collection === "commandReceipts"
+				? record.commandId
+				: collection === "roomSequences"
+					? record.roomId
+					: record.id;
+	return typeof id === "string" ? id : undefined;
+}
+
+function collaborationRecordCount(snapshot: CollaborationStoreSnapshot): number {
+	return COLLABORATION_COLLECTIONS.reduce(
+		(total, collection) => total + (snapshot[collection]?.length ?? 0),
+		0,
+	);
+}
+
+export function collaborationSnapshotsEqual(
+	target: CollaborationStoreSnapshot,
+	source: CollaborationStoreSnapshot,
+): boolean {
+	for (const collection of COLLABORATION_COLLECTIONS) {
+		const targetValues = target[collection] ?? [];
+		const sourceValues = source[collection] ?? [];
+		if (targetValues.length !== sourceValues.length) return false;
+		const targetById = new Map(
+			targetValues.map((value) => [collaborationRecordId(collection, value), value]),
+		);
+		const sourceIds = new Set(
+			sourceValues.map((value) => collaborationRecordId(collection, value)),
+		);
+		if (targetById.size !== targetValues.length || sourceIds.size !== sourceValues.length) {
+			return false;
+		}
+		for (const sourceValue of sourceValues) {
+			const id = collaborationRecordId(collection, sourceValue);
+			if (!id) return false;
+			const targetValue = targetById.get(id);
+			if (targetValue === undefined) return false;
+			if (!isDeepStrictEqual(targetValue, sourceValue)) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+export function migrationDomainsSucceeded(domains: MigrateReport["domains"]): boolean {
+	return domains.every((domain) => domain.error === undefined);
+}
+
+export async function migrateCollaborationSnapshot(
+	source: CollaborationStore,
+	target: CollaborationStore,
+	opts: { dryRun: boolean; verify: boolean },
+): Promise<{ copied: number; verified: boolean }> {
+	const snapshot = await source.readSnapshot();
+	if (!collaborationSnapshotsEqual(snapshot, snapshot)) {
+		throw new Error("source collaboration snapshot contains invalid or duplicate record ids");
+	}
+	const copied = collaborationRecordCount(snapshot);
+	if (opts.dryRun) return { copied, verified: false };
+	const importer = target as Partial<CollaborationSnapshotImporter>;
+	if (typeof importer.importSnapshot !== "function") {
+		throw new Error("target collaboration store does not support snapshot import");
+	}
+	await importer.importSnapshot(snapshot);
+	const verified = opts.verify
+		? collaborationSnapshotsEqual(await target.readSnapshot(), snapshot)
+		: false;
+	if (opts.verify && !verified) {
+		throw new Error("collaboration snapshot verification failed");
+	}
+	return { copied, verified };
 }
 
 /**
@@ -610,6 +718,16 @@ export async function runStoreMigrate(opts: MigrateOptions): Promise<MigrateRepo
 		}),
 	);
 
+	// --- Team Mode authority ---------------------------------------------
+	domains.push(
+		await safeDomain("collaboration", opts.onProgress, async () =>
+			migrateCollaborationSnapshot(source.collaboration, target.collaboration, {
+				dryRun: !!opts.dryRun,
+				verify: verifySha,
+			}),
+		),
+	);
+
 	// --- logs (today's tail only — full history not worth copying) -------
 	domains.push(
 		await safeDomain("logs", opts.onProgress, async () => {
@@ -626,7 +744,7 @@ export async function runStoreMigrate(opts: MigrateOptions): Promise<MigrateRepo
 	// --- mode.sentinel flip ----------------------------------------------
 	let sentinelWritten = false;
 	let convexPin: string | undefined;
-	if (!opts.dryRun) {
+	if (!opts.dryRun && migrationDomainsSucceeded(domains)) {
 		try {
 			if (opts.to === "convex") {
 				// Pin the URL we actually connected to (flag → sentinel → env),
@@ -672,7 +790,7 @@ export async function runStoreMigrate(opts: MigrateOptions): Promise<MigrateRepo
 		cleanSource &&
 		sentinelWritten &&
 		convexPin !== undefined &&
-		domains.every((d) => !d.error)
+		migrationDomainsSucceeded(domains)
 	) {
 		try {
 			cleanLocalSourceAfterConvexMigrate(opts.stateDir, convexPin);

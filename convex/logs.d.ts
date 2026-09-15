@@ -1,7 +1,11 @@
 export declare const appendSessionEvent: import("convex/server").RegisteredMutation<"public", {
-    toolName?: string | undefined;
-    aborted?: boolean | undefined;
+    attempt?: number | undefined;
     role?: string | undefined;
+    errorMessage?: string | undefined;
+    delayMs?: number | undefined;
+    aborted?: boolean | undefined;
+    result?: ArrayBuffer | undefined;
+    toolName?: string | undefined;
     content?: ArrayBuffer | undefined;
     toolCallId?: string | undefined;
     isError?: boolean | undefined;
@@ -9,11 +13,7 @@ export declare const appendSessionEvent: import("convex/server").RegisteredMutat
     inner?: string | undefined;
     delta?: string | undefined;
     stopReason?: string | undefined;
-    errorMessage?: string | undefined;
-    result?: ArrayBuffer | undefined;
-    attempt?: number | undefined;
     maxAttempts?: number | undefined;
-    delayMs?: number | undefined;
     success?: boolean | undefined;
     finalError?: string | undefined;
     willRetry?: boolean | undefined;
@@ -32,9 +32,13 @@ export declare const readSessionEventTail: import("convex/server").RegisteredQue
 }, Promise<{
     _id: import("convex/values").GenericId<"sessionEvents">;
     _creationTime: number;
-    toolName?: string | undefined;
-    aborted?: boolean | undefined;
+    attempt?: number | undefined;
     role?: string | undefined;
+    errorMessage?: string | undefined;
+    delayMs?: number | undefined;
+    aborted?: boolean | undefined;
+    result?: ArrayBuffer | undefined;
+    toolName?: string | undefined;
     content?: ArrayBuffer | undefined;
     toolCallId?: string | undefined;
     isError?: boolean | undefined;
@@ -42,11 +46,7 @@ export declare const readSessionEventTail: import("convex/server").RegisteredQue
     inner?: string | undefined;
     delta?: string | undefined;
     stopReason?: string | undefined;
-    errorMessage?: string | undefined;
-    result?: ArrayBuffer | undefined;
-    attempt?: number | undefined;
     maxAttempts?: number | undefined;
-    delayMs?: number | undefined;
     success?: boolean | undefined;
     finalError?: string | undefined;
     willRetry?: boolean | undefined;
@@ -64,9 +64,13 @@ export declare const findLastError: import("convex/server").RegisteredQuery<"pub
 }, Promise<{
     _id: import("convex/values").GenericId<"sessionEvents">;
     _creationTime: number;
-    toolName?: string | undefined;
-    aborted?: boolean | undefined;
+    attempt?: number | undefined;
     role?: string | undefined;
+    errorMessage?: string | undefined;
+    delayMs?: number | undefined;
+    aborted?: boolean | undefined;
+    result?: ArrayBuffer | undefined;
+    toolName?: string | undefined;
     content?: ArrayBuffer | undefined;
     toolCallId?: string | undefined;
     isError?: boolean | undefined;
@@ -74,11 +78,7 @@ export declare const findLastError: import("convex/server").RegisteredQuery<"pub
     inner?: string | undefined;
     delta?: string | undefined;
     stopReason?: string | undefined;
-    errorMessage?: string | undefined;
-    result?: ArrayBuffer | undefined;
-    attempt?: number | undefined;
     maxAttempts?: number | undefined;
-    delayMs?: number | undefined;
     success?: boolean | undefined;
     finalError?: string | undefined;
     willRetry?: boolean | undefined;
@@ -124,9 +124,9 @@ export declare const pruneSubsystemLogs: import("convex/server").RegisteredMutat
 }>>;
 export declare const appendConfigAudit: import("convex/server").RegisteredMutation<"public", {
     pid?: number | undefined;
+    bytes: number;
     sha256: string;
     ts: string;
-    bytes: number;
     instanceId: string;
 }, Promise<{
     pid?: number | undefined;
@@ -146,19 +146,19 @@ export declare const listConfigAudit: import("convex/server").RegisteredQuery<"p
     _creationTime: number;
     pid?: number | undefined;
     prevHash?: string | undefined;
+    bytes: number;
     sha256: string;
     ts: string;
-    bytes: number;
     instanceId: string;
     lineHash: string;
     seq: number;
 }[]>>;
 export declare const writeConfigHealth: import("convex/server").RegisteredMutation<"public", {
+    bytes: number;
     sha256: string;
+    pid: number;
     mtimeMs: number;
     ts: string;
-    pid: number;
-    bytes: number;
     ownerId: string;
     configPath: string;
 }, Promise<void>>;
@@ -167,11 +167,11 @@ export declare const readConfigHealth: import("convex/server").RegisteredQuery<"
 }, Promise<{
     _id: import("convex/values").GenericId<"configHealth">;
     _creationTime: number;
+    bytes: number;
     sha256: string;
+    pid: number;
     mtimeMs: number;
     ts: string;
-    pid: number;
-    bytes: number;
     ownerId: string;
     configPath: string;
 } | null>>;
